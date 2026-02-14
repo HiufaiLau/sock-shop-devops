@@ -24,6 +24,5 @@ monitoring-open:
 destroy:
 	./devops/scripts/destroy.sh
 
-
 monitoring-status:
 	kubectl -n monitoring get pods,svc
