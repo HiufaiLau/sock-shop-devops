@@ -19,7 +19,7 @@ monitoring-install:
 
 monitoring-open:
 	@echo "Open http://localhost:3000"
-	kubectl -n monitoring port-forward svc/monitoring-grafana 3000:80
+	kubectl -n monitoring port-forward svc/kube-prometheus-stack-grafana 3000:80
 
 destroy:
 	./devops/scripts/destroy.sh
