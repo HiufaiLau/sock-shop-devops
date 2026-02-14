@@ -1,0 +1,28 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: sock-shop-alerts
+  namespace: monitoring
+  labels:
+    release: kube-prometheus-stack
+spec:
+  groups:
+  - name: sock-shop.rules
+    rules:
+    - alert: SockShopHighPodRestarts
+      expr: increase(kube_pod_container_status_restarts_total{namespace="sock-shop"}[10m]) > 2
+      for: 5m
+      labels:
+        severity: warning
+      annotations:
+        summary: "High restart rate in sock-shop"
+        description: "A container in sock-shop restarted more than 2 times in the last 10 minutes."
+
+    - alert: SockShopHighCPUUsage
+      expr: sum(rate(container_cpu_usage_seconds_total{namespace="sock-shop",container!=""}[5m])) > 1
+      for: 10m
+      labels:
+        severity: warning
+      annotations:
+        summary: "High CPU usage in sock-shop"
+        description: "Total CPU usage in sock-shop exceeds ~1 core for 10 minutes."
