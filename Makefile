@@ -21,12 +21,9 @@ monitoring-open:
 	@echo "Open http://localhost:3000"
 	kubectl -n monitoring port-forward svc/monitoring-grafana 3000:80
 
-monitoring-status:
-	kubectl -n monitoring get pods,svc
-
-
 destroy:
 	./devops/scripts/destroy.sh
+
 
 monitoring-status:
 	kubectl -n monitoring get pods,svc
