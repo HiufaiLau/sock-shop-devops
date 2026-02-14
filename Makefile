@@ -18,8 +18,8 @@ monitoring-install:
 	./devops/scripts/monitoring-install.sh
 
 monitoring-open:
-	@echo "Open http://localhost:3000 (admin/admin on first login, then change password)"
-	kubectl -n monitoring port-forward svc/kube-prometheus-stack-grafana 3000:80
+	@echo "Open http://localhost:3000"
+	kubectl -n monitoring port-forward svc/monitoring-grafana 3000:80
 
 destroy:
 	./devops/scripts/destroy.sh
