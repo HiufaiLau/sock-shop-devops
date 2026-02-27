@@ -1,0 +1,184 @@
+name: CD (Deploy)
+
+on:
+  push:
+    branches:
+      - staging
+      - master
+
+concurrency:
+  group: cd-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  deploy-staging:
+    if: github.ref_name == 'staging'
+    runs-on: ubuntu-latest
+    environment: staging
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Install tools (terraform, kubectl, helm)
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y unzip ca-certificates curl
+
+          TF_VER="1.6.6"
+          curl -fsSL -o terraform.zip "https://releases.hashicorp.com/terraform/${TF_VER}/terraform_${TF_VER}_linux_amd64.zip"
+          unzip -q terraform.zip
+          sudo install -m 0755 terraform /usr/local/bin/terraform
+
+          KUBECTL_VER="v1.27.3"
+          curl -fsSL -o kubectl "https://dl.k8s.io/release/${KUBECTL_VER}/bin/linux/amd64/kubectl"
+          chmod +x kubectl && sudo mv kubectl /usr/local/bin/kubectl
+
+          HELM_VER="v3.13.3"
+          curl -fsSL -o helm.tar.gz "https://get.helm.sh/helm-${HELM_VER}-linux-amd64.tar.gz"
+          tar -xzf helm.tar.gz
+          sudo mv linux-amd64/helm /usr/local/bin/helm
+
+      - name: Terraform apply (staging)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd infra/envs/staging
+          terraform init
+          terraform apply -auto-approve
+
+      - name: Set kubeconfig (staging)
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.kube
+          echo "${{ secrets.KUBECONFIG_B64 }}" | base64 -d > ~/.kube/config
+          chmod 600 ~/.kube/config
+          kubectl get nodes -o wide
+
+      - name: Install nginx ingress (staging)
+        shell: bash
+        run: |
+          set -euo pipefail
+          helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
+          helm repo update
+          helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
+            -n ingress-nginx --create-namespace \
+            --set controller.service.type=NodePort \
+            --set controller.service.nodePorts.http=30080 \
+            --set controller.service.nodePorts.https=30443
+
+      - name: Deploy app (staging)
+        shell: bash
+        run: |
+          set -euo pipefail
+          kubectl apply -f deploy/kubernetes/complete-demo.yaml
+          kubectl apply -f platform/k8s/ingress/sockshop-ingress.yaml
+
+      - name: Wait + smoke test (staging)
+        shell: bash
+        run: |
+          set -euo pipefail
+          for d in $(kubectl -n sock-shop get deploy -o name); do
+            kubectl -n sock-shop rollout status "$d" --timeout=10m
+          done
+
+          kubectl -n sock-shop port-forward svc/front-end 18080:80 >/tmp/pf.log 2>&1 &
+          PF_PID=$!
+          sleep 3
+          curl -fsS http://127.0.0.1:18080/ | head -n 10
+          kill $PF_PID
+
+  deploy-production:
+    if: github.ref_name == 'master'
+    runs-on: ubuntu-latest
+    environment: production
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Install tools (terraform, kubectl, helm)
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y unzip ca-certificates curl
+
+          TF_VER="1.6.6"
+          curl -fsSL -o terraform.zip "https://releases.hashicorp.com/terraform/${TF_VER}/terraform_${TF_VER}_linux_amd64.zip"
+          unzip -q terraform.zip
+          sudo install -m 0755 terraform /usr/local/bin/terraform
+
+          KUBECTL_VER="v1.27.3"
+          curl -fsSL -o kubectl "https://dl.k8s.io/release/${KUBECTL_VER}/bin/linux/amd64/kubectl"
+          chmod +x kubectl && sudo mv kubectl /usr/local/bin/kubectl
+
+          HELM_VER="v3.13.3"
+          curl -fsSL -o helm.tar.gz "https://get.helm.sh/helm-${HELM_VER}-linux-amd64.tar.gz"
+          tar -xzf helm.tar.gz
+          sudo mv linux-amd64/helm /usr/local/bin/helm
+
+      - name: Terraform apply (production)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd infra/envs/production
+          terraform init
+          terraform apply -auto-approve
+
+      - name: Set kubeconfig (production)
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.kube
+          echo "${{ secrets.KUBECONFIG_B64 }}" | base64 -d > ~/.kube/config
+          chmod 600 ~/.kube/config
+          kubectl get nodes -o wide
+
+      - name: Install nginx ingress (production)
+        shell: bash
+        run: |
+          set -euo pipefail
+          helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
+          helm repo update
+          helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
+            -n ingress-nginx --create-namespace \
+            --set controller.service.type=NodePort \
+            --set controller.service.nodePorts.http=30080 \
+            --set controller.service.nodePorts.https=30443
+
+      - name: Deploy app (production)
+        shell: bash
+        run: |
+          set -euo pipefail
+          kubectl apply -f deploy/kubernetes/complete-demo.yaml
+          kubectl apply -f platform/k8s/ingress/sockshop-ingress.yaml
+
+      - name: Wait + smoke test (production)
+        shell: bash
+        run: |
+          set -euo pipefail
+          for d in $(kubectl -n sock-shop get deploy -o name); do
+            kubectl -n sock-shop rollout status "$d" --timeout=10m
+          done
+
+          kubectl -n sock-shop port-forward svc/front-end 18080:80 >/tmp/pf.log 2>&1 &
+          PF_PID=$!
+          sleep 3
+          curl -fsS http://127.0.0.1:18080/ | head -n 10
+          kill $PF_PID

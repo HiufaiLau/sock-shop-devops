@@ -1,0 +1,118 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: ["**"]   # feature/*, staging, master, etc.
+
+jobs:
+  complete-demo-sync-check:
+    name: Complete demo sync check
+    runs-on: ubuntu-latest
+    env:
+      COMPLETE_DEMO_DIR: deploy/kubernetes/
+      COMPLETE_DEMO_IMAGE: manifests-image
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build manifests check image
+        env:
+          DOCKER_BUILDKIT: 1
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker build -t "${COMPLETE_DEMO_IMAGE}" "${COMPLETE_DEMO_DIR}"
+
+      - name: Check complete-demo.yaml is in sync
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm -v "${{ github.workspace }}:/workdir" \
+            "${COMPLETE_DEMO_IMAGE}" make -C "${COMPLETE_DEMO_DIR}" check-complete-demo
+
+  kubeconform:
+    name: Validate Kubernetes YAML (kubeconform)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install kubeconform
+        shell: bash
+        run: |
+          set -euo pipefail
+          VER="0.6.7"
+          curl -fsSL -o kubeconform.tar.gz \
+            "https://github.com/yannh/kubeconform/releases/download/v${VER}/kubeconform-linux-amd64.tar.gz"
+          tar -xzf kubeconform.tar.gz kubeconform
+          sudo install -m 0755 kubeconform /usr/local/bin/kubeconform
+          kubeconform -v
+
+      - name: Validate manifests
+        shell: bash
+        run: |
+          set -euo pipefail
+          find deploy/kubernetes -type f \( -name "*.yaml" -o -name "*.yml" \) -print0 \
+            | xargs -0 -r kubeconform \
+                -summary \
+                -ignore-missing-schemas \
+                -skip "CustomResourceDefinition" \
+                -kubernetes-version "1.27.0"
+
+  kind-deploy-smoke:
+    name: Kind deploy smoke test
+    needs: [complete-demo-sync-check, kubeconform]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      KIND_VERSION: v0.20.0
+      KIND_NODE_IMAGE: kindest/node:v1.27.3
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up kind
+        uses: engineerd/setup-kind@v0.6.2
+        with:
+          version: ${{ env.KIND_VERSION }}
+          image: ${{ env.KIND_NODE_IMAGE }}
+
+      - name: Deploy complete-demo.yaml
+        shell: bash
+        run: |
+          set -euo pipefail
+          kubectl apply -f deploy/kubernetes/complete-demo.yaml
+
+      - name: Wait for sock-shop rollout
+        shell: bash
+        run: |
+          set -euo pipefail
+          kubectl -n sock-shop get deploy -o name
+
+          for d in $(kubectl -n sock-shop get deploy -o name); do
+            echo "Waiting for rollout: $d"
+            kubectl -n sock-shop rollout status "$d" --timeout=10m
+          done
+
+          kubectl get pods -A -o wide
+
+      - name: Smoke test frontend (port-forward)
+        shell: bash
+        run: |
+          set -euo pipefail
+          kubectl -n sock-shop port-forward svc/front-end 18080:80 >/tmp/pf.log 2>&1 &
+          PF_PID=$!
+          sleep 3
+          curl -fsS http://127.0.0.1:18080/ | head -n 10
+          kill $PF_PID
+
+      - name: Debug on failure
+        if: failure()
+        shell: bash
+        run: |
+          echo "=== pods (all) ==="
+          kubectl get pods -A -o wide || true
+          echo "=== events (sock-shop) ==="
+          kubectl -n sock-shop get events --sort-by=.lastTimestamp | tail -n 100 || true
+          echo "=== describe pods (sock-shop) ==="
+          kubectl -n sock-shop describe pods || true
+          echo "=== node allocation ==="
+          kubectl describe node | sed -n '/Allocated resources/,+20p' || true
