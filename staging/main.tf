@@ -1,28 +1,33 @@
-provider "aws" {
-  region = "${var.aws_region}"
+terraform {
+  required_version = ">= 1.5.0"
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 5.0"
+    }
+  }
 }
 
-resource "aws_security_group" "microservices-demo-staging-k8s" {
-  name        = "microservices-demo-staging-k8s"
-  description = "allow all internal traffic, all traffic from bastion and http from anywhere"
-  ingress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    self        = "true"
-  }
-  ingress {
-    from_port       = 0
-    to_port         = 0
-    protocol        = "-1"
-    security_groups = ["${var.bastion_security_group}"]
-  }
+provider "aws" {
+  region = var.aws_region
+}
+
+data "aws_ssm_parameter" "ubuntu_ami" {
+  name = "/aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id"
+}
+
+resource "aws_security_group" "alb_sg" {
+  name        = "sockshop-staging-alb-sg"
+  description = "Allow HTTP from internet to ALB"
+  vpc_id      = var.vpc_id
+
   ingress {
     from_port   = 80
     to_port     = 80
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
   }
+
   egress {
     from_port   = 0
     to_port     = 0
@@ -31,107 +36,134 @@ resource "aws_security_group" "microservices-demo-staging-k8s" {
   }
 }
 
-resource "aws_instance" "k8s-node" {
-  depends_on      = [ "aws_instance.k8s-master" ] 
-  count           = "${var.nodecount}"
-  instance_type   = "${var.node_instance_type}"
-  ami             = "${lookup(var.aws_amis, var.aws_region)}"
-  key_name        = "${var.key_name}"
-  security_groups = ["${aws_security_group.microservices-demo-staging-k8s.name}"]
-  tags {
-    Name = "microservices-demo-staging-node"
+resource "aws_security_group" "k3s_sg" {
+  name        = "sockshop-staging-k3s-sg"
+  description = "k3s node security group"
+  vpc_id      = var.vpc_id
+
+  ingress {
+    description = "all internal traffic"
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    self        = true
   }
+
+  ingress {
+    description     = "all traffic from bastion"
+    from_port       = 0
+    to_port         = 0
+    protocol        = "-1"
+    security_groups = [var.bastion_security_group]
+  }
+
+  ingress {
+    description     = "ALB to nginx ingress NodePort"
+    from_port       = 30080
+    to_port         = 30080
+    protocol        = "tcp"
+    security_groups = [aws_security_group.alb_sg.id]
+  }
+
+  ingress {
+    description = "SSH from bastion CIDR"
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = [var.bastion_cidr_block]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+}
+
+resource "aws_instance" "k3s_server" {
+  ami                    = data.aws_ssm_parameter.ubuntu_ami.value
+  instance_type          = var.master_instance_type
+  key_name               = var.key_name
+  subnet_id              = var.subnet_id
+  vpc_security_group_ids = [aws_security_group.k3s_sg.id]
 
   root_block_device {
-    volume_type = "gp2"
-    volume_size = "50"
+    volume_type = "gp3"
+    volume_size = 50
   }
 
-  connection {
-    user        = "${var.instance_user}"
-    private_key = "${file("${var.private_key_file}")}"
-    host        = "${self.private_ip}"
+  tags = {
+    Name = "sockshop-staging-k3s-server"
   }
 
-  provisioner "remote-exec" {
-    inline = [
-      "sudo sh -c 'curl https://packages.cloud.google.com/apt/doc/apt-key.gpg | apt-key add -'",
-      "sudo sh -c 'echo deb http://apt.kubernetes.io/ kubernetes-xenial main > /etc/apt/sources.list.d/kubernetes.list'",
-      "sudo apt-get update",
-      "sudo apt-get install -y docker.io kubelet kubeadm kubectl kubernetes-cni"
-    ]
-  }
+  user_data = <<-EOF
+    #!/bin/bash
+    set -eux
 
-  provisioner "local-exec" {
-    command = "ssh -i ${var.private_key_file} -o StrictHostKeyChecking=no ubuntu@${self.private_ip} sudo `cat join.cmd`"
-  }
+    curl -sfL https://get.k3s.io | INSTALL_K3S_EXEC="server --write-kubeconfig-mode 644" sh -
 
+    until kubectl get node; do
+      sleep 5
+    done
+
+    kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.11.3/deploy/static/provider/baremetal/deploy.yaml
+
+    until kubectl -n ingress-nginx get svc ingress-nginx-controller; do
+      sleep 5
+    done
+
+    kubectl -n ingress-nginx patch svc ingress-nginx-controller -p '{
+      "spec": {
+        "type": "NodePort",
+        "ports": [
+          {"name":"http","port":80,"protocol":"TCP","targetPort":"http","nodePort":30080},
+          {"name":"https","port":443,"protocol":"TCP","targetPort":"https","nodePort":30443}
+        ]
+      }
+    }' || true
+  EOF
 }
 
-resource "aws_instance" "k8s-master" {
-  instance_type   = "${var.master_instance_type}"
-  ami             = "${lookup(var.aws_amis, var.aws_region)}"
-  key_name        = "${var.key_name}"
-  security_groups = ["${aws_security_group.microservices-demo-staging-k8s.name}"]
-  tags {
-    Name = "microservices-demo-staging-master"
-  }
+resource "aws_lb" "staging_alb" {
+  name               = "sockshop-staging-alb"
+  internal           = false
+  load_balancer_type = "application"
+  security_groups    = [aws_security_group.alb_sg.id]
+  subnets            = var.public_subnet_ids
+}
 
-  root_block_device {
-    volume_type = "gp2"
-    volume_size = "50"
-  }
+resource "aws_lb_target_group" "nginx_tg" {
+  name        = "sockshop-staging-tg"
+  port        = 30080
+  protocol    = "HTTP"
+  vpc_id      = var.vpc_id
+  target_type = "instance"
 
-  connection {
-    user        = "${var.instance_user}"
-    private_key = "${file("${var.private_key_file}")}"
-    host        = "${self.private_ip}"
-  }
-
-  provisioner "remote-exec" {
-    inline = [
-      "sudo sh -c 'curl https://packages.cloud.google.com/apt/doc/apt-key.gpg | apt-key add -'",
-      "sudo sh -c 'echo deb http://apt.kubernetes.io/ kubernetes-xenial main > /etc/apt/sources.list.d/kubernetes.list'",
-      "sudo apt-get update",
-      "sudo apt-get install -y docker.io kubelet kubeadm kubectl kubernetes-cni",
-      "mkdir -p /home/ubuntu/microservices-demo/deploy/kubernetes/manifests"
-    ]
-  }
-
-  provisioner "local-exec" {
-    command = "ssh -i ${var.private_key_file} -o StrictHostKeyChecking=no ubuntu@${self.private_ip} sudo kubeadm init | grep -e --token > join.cmd"
-  }
-
-  provisioner "remote-exec" {
-    inline = [
-      "sudo cp /etc/kubernetes/admin.conf ~/config",
-      "sudo chown -R ubuntu ~/config"
-    ]
-  }
-
-  provisioner "local-exec" {
-    command = "scp -i ${var.private_key_file} -o StrictHostKeyChecking=no ubuntu@${self.private_ip}:~/config ~/.kube/"
+  health_check {
+    path                = "/"
+    protocol            = "HTTP"
+    port                = "30080"
+    healthy_threshold   = 2
+    unhealthy_threshold = 3
+    timeout             = 5
+    interval            = 30
   }
 }
 
-resource "null_resource" "up" {
-  depends_on      = [ "aws_instance.k8s-node" ]
-  provisioner "local-exec" {
-    command = "./up.sh ${var.weave_cloud_token}"
-  }
+resource "aws_lb_target_group_attachment" "server_attach" {
+  target_group_arn = aws_lb_target_group.nginx_tg.arn
+  target_id        = aws_instance.k3s_server.id
+  port             = 30080
 }
 
-resource "aws_elb" "microservices-demo-staging-k8s" {
-  depends_on = [ "aws_instance.k8s-node" ]
-  name = "microservices-demo-staging-k8s"
-  instances = ["${aws_instance.k8s-node.*.id}"]
-  availability_zones = ["eu-west-1a", "eu-west-1b", "eu-west-1c"]
-  security_groups = ["${aws_security_group.microservices-demo-staging-k8s.id}"]
+resource "aws_lb_listener" "http" {
+  load_balancer_arn = aws_lb.staging_alb.arn
+  port              = 80
+  protocol          = "HTTP"
 
-  listener {
-    lb_port = 80
-    instance_port = 30001
-    lb_protocol = "http"
-    instance_protocol = "http"
+  default_action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.nginx_tg.arn
   }
 }
