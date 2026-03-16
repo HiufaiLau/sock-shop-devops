@@ -49,13 +49,18 @@ jobs:
 
       - name: Validate Kubernetes manifests
         run: |
-          find deploy/kubernetes -type f \( -name "*.yaml" -o -name "*.yml" \) \
-          | xargs -I{} kubeconform \
-              -ignore-missing-schemas \
-              -skip CustomResourceDefinition \
-              -kubernetes-version 1.27 \
-              {}
-
+          kubeconform \
+            -strict \
+            -ignore-missing-schemas \
+            -summary \
+            $(find deploy/kubernetes -type f -name "*.yaml" \
+            ! -path "*helm-chart/templates*" \
+            ! -path "*terraform*" )
+     
+      - name: Helm lint
+        run: |
+          helm lint deploy/kubernetes/helm-chart
+        
   kind-deploy-smoke:
     name: Kind deploy smoke test
     needs: [complete-demo-sync-check, kubeconform]
