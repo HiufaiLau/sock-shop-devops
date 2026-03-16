@@ -1,39 +1,45 @@
+variable "env" {
+  description = "Environment name"
+  type        = string
+  default     = "staging"
+}
+
 variable "aws_region" {
   description = "AWS region"
+  type        = string
   default     = "eu-west-1"
 }
 
-variable "vpc_id" {
-  description = "VPC ID"
-  type        = string
-}
-
-variable "subnet_id" {
-  description = "Subnet ID for the k3s server"
-  type        = string
-}
-
-variable "public_subnet_ids" {
-  description = "Public subnet IDs for the ALB"
-  type        = list(string)
-}
-
-variable "bastion_security_group" {
-  description = "Bastion security group ID"
+variable "key_name" {
+  description = "EC2 SSH key pair name"
   type        = string
 }
 
 variable "bastion_cidr_block" {
-  description = "CIDR block for bastion/public admin access"
-  type        = string
-}
-
-variable "key_name" {
-  description = "SSH key pair name"
+  description = "Your public IP in CIDR format for SSH"
   type        = string
 }
 
 variable "master_instance_type" {
-  description = "EC2 instance type for k3s server"
+  description = "EC2 type for k3s server"
+  type        = string
   default     = "t3.large"
+}
+
+variable "vpc_cidr" {
+  description = "CIDR block for VPC"
+  type        = string
+  default     = "10.10.0.0/16"
+}
+
+variable "azs" {
+  description = "Availability zones"
+  type        = list(string)
+  default     = ["eu-west-1a", "eu-west-1b", "eu-west-1c"]
+}
+
+variable "public_subnets_cidrs" {
+  description = "CIDRs for public subnets"
+  type        = list(string)
+  default     = ["10.10.1.0/24", "10.10.2.0/24", "10.10.3.0/24"]
 }

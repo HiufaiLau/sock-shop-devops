@@ -1,0 +1,18 @@
+key_name           = "your-keypair"
+bastion_cidr_block = "YOUR.PUBLIC.IP/32"
+
+env = "staging"
+
+vpc_cidr = "10.10.0.0/16"
+
+azs = [
+  "eu-west-1a",
+  "eu-west-1b",
+  "eu-west-1c"
+]
+
+public_subnets_cidrs = [
+  "10.10.1.0/24",
+  "10.10.2.0/24",
+  "10.10.3.0/24"
+]
