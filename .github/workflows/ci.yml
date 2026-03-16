@@ -49,18 +49,32 @@ jobs:
 
       - name: Validate Kubernetes manifests
         run: |
-          kubeconform \
+          find deploy/kubernetes -name "*.yaml" \
+            | xargs kubeconform \
             -strict \
             -ignore-missing-schemas \
             -summary \
-            $(find deploy/kubernetes -type f -name "*.yaml" \
-            ! -path "*helm-chart/templates*" \
-            ! -path "*terraform*" )
+            -kubernetes-version 1.27.0
+      - name: Install Helm
+        run: curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash      
      
       - name: Helm lint
         run: |
           helm lint deploy/kubernetes/helm-chart
-        
+
+      - name: Validate rendered manifests
+        run: |
+          kubeconform \
+            -strict \
+            -ignore-missing-schemas \
+            -summary \
+            rendered.yaml
+            - name: Render Helm chart
+              run: |
+                helm template sockshop deploy/kubernetes/helm-chart \
+                  --namespace sock-shop \
+                  > rendered.yaml   
+            
   kind-deploy-smoke:
     name: Kind deploy smoke test
     needs: [complete-demo-sync-check, kubeconform]
