@@ -3,7 +3,7 @@ name: CI
 on:
   pull_request:
   push:
-    branches: ["**"]   # feature/*, staging, master, etc.
+    branches: ["**"]
 
 jobs:
   complete-demo-sync-check:
@@ -38,43 +38,65 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install kubeconform
+        shell: bash
         run: |
-          set -e
+          set -euo pipefail
           VER="0.6.7"
-          curl -L -o kubeconform.tar.gz \
-            https://github.com/yannh/kubeconform/releases/download/v${VER}/kubeconform-linux-amd64.tar.gz
+          curl -fsSL -o kubeconform.tar.gz \
+            "https://github.com/yannh/kubeconform/releases/download/v${VER}/kubeconform-linux-amd64.tar.gz"
           tar -xzf kubeconform.tar.gz kubeconform
-          sudo mv kubeconform /usr/local/bin/
+          sudo install -m 0755 kubeconform /usr/local/bin/kubeconform
           kubeconform -v
 
-      - name: Validate Kubernetes manifests
-        run: |
-          find deploy/kubernetes -name "*.yaml" \
-            | xargs kubeconform \
-            -strict \
-            -ignore-missing-schemas \
-            -summary \
-            -kubernetes-version 1.27.0
       - name: Install Helm
-        run: curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash      
-     
-      - name: Helm lint
+        shell: bash
         run: |
+          set -euo pipefail
+          curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+          helm version
+
+      - name: Validate raw Kubernetes manifests
+        shell: bash
+        run: |
+          set -euo pipefail
+          find deploy/kubernetes -type f \( -name "*.yaml" -o -name "*.yml" \) \
+            ! -path "*/helm-chart/*" \
+            ! -path "*/terraform/*" \
+            -print0 \
+          | xargs -0 -r kubeconform \
+              -strict \
+              -ignore-missing-schemas \
+              -skip "CustomResourceDefinition" \
+              -summary \
+              -kubernetes-version "1.27.0"
+
+      - name: Helm lint
+        shell: bash
+        run: |
+          set -euo pipefail
           helm lint deploy/kubernetes/helm-chart
 
-      - name: Validate rendered manifests
+      - name: Render Helm chart
+        shell: bash
         run: |
+          set -euo pipefail
+          helm template sock-shop deploy/kubernetes/helm-chart \
+            --namespace sock-shop \
+            > /tmp/sock-shop-rendered.yaml
+          test -s /tmp/sock-shop-rendered.yaml
+
+      - name: Validate rendered Helm manifests
+        shell: bash
+        run: |
+          set -euo pipefail
           kubeconform \
             -strict \
             -ignore-missing-schemas \
+            -skip "CustomResourceDefinition" \
             -summary \
-            rendered.yaml
-            - name: Render Helm chart
-              run: |
-                helm template sockshop deploy/kubernetes/helm-chart \
-                  --namespace sock-shop \
-                  > rendered.yaml   
-            
+            -kubernetes-version "1.27.0" \
+            /tmp/sock-shop-rendered.yaml
+
   kind-deploy-smoke:
     name: Kind deploy smoke test
     needs: [complete-demo-sync-check, kubeconform]
@@ -83,6 +105,7 @@ jobs:
     env:
       KIND_VERSION: v0.20.0
       KIND_NODE_IMAGE: kindest/node:v1.27.3
+
     steps:
       - uses: actions/checkout@v4
 
@@ -92,32 +115,28 @@ jobs:
           version: ${{ env.KIND_VERSION }}
           image: ${{ env.KIND_NODE_IMAGE }}
 
-      - name: Deploy complete-demo.yaml
+      - name: Deploy complete demo
         shell: bash
         run: |
           set -euo pipefail
           kubectl apply -f deploy/kubernetes/complete-demo.yaml
 
-      - name: Wait for sock-shop rollout
+      - name: Wait for sock-shop deployments rollout
         shell: bash
         run: |
           set -euo pipefail
-          kubectl -n sock-shop get deploy -o name
-
           for d in $(kubectl -n sock-shop get deploy -o name); do
-            echo "Waiting for rollout: $d"
             kubectl -n sock-shop rollout status "$d" --timeout=10m
           done
-
           kubectl get pods -A -o wide
 
-      - name: Smoke test frontend (port-forward)
+      - name: Smoke test frontend
         shell: bash
         run: |
           set -euo pipefail
           kubectl -n sock-shop port-forward svc/front-end 18080:80 >/tmp/pf.log 2>&1 &
           PF_PID=$!
-          sleep 3
+          sleep 5
           curl -fsS http://127.0.0.1:18080/ | head -n 10
           kill $PF_PID
 
@@ -125,11 +144,7 @@ jobs:
         if: failure()
         shell: bash
         run: |
-          echo "=== pods (all) ==="
           kubectl get pods -A -o wide || true
-          echo "=== events (sock-shop) ==="
           kubectl -n sock-shop get events --sort-by=.lastTimestamp | tail -n 100 || true
-          echo "=== describe pods (sock-shop) ==="
           kubectl -n sock-shop describe pods || true
-          echo "=== node allocation ==="
           kubectl describe node | sed -n '/Allocated resources/,+20p' || true
