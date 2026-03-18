@@ -63,7 +63,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
           find deploy/kubernetes -type f \( -name "*.yaml" -o -name "*.yml" \) \
             ! -path "*/helm-chart/*" \
             ! -path "*/terraform/*" \
@@ -88,9 +87,7 @@ jobs:
           helm template sock-shop deploy/kubernetes/helm-chart \
             --namespace sock-shop \
             > /tmp/sock-shop-rendered.yaml
-
           test -s /tmp/sock-shop-rendered.yaml
-          head -n 40 /tmp/sock-shop-rendered.yaml
 
       - name: Validate rendered Helm manifests
         shell: bash
@@ -142,14 +139,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
-          kubectl -n sock-shop get deploy -o name
-
           for d in $(kubectl -n sock-shop get deploy -o name); do
-            echo "Waiting for rollout: $d"
             kubectl -n sock-shop rollout status "$d" --timeout=10m
           done
-
           kubectl get pods -A -o wide
 
       - name: Smoke test frontend
@@ -166,14 +158,7 @@ jobs:
         if: failure()
         shell: bash
         run: |
-          echo "=== Pods ==="
           kubectl get pods -A -o wide || true
-
-          echo "=== Sock-shop events ==="
           kubectl -n sock-shop get events --sort-by=.lastTimestamp | tail -n 100 || true
-
-          echo "=== Sock-shop pod descriptions ==="
           kubectl -n sock-shop describe pods || true
-
-          echo "=== Node allocation ==="
           kubectl describe node | sed -n '/Allocated resources/,+20p' || true
