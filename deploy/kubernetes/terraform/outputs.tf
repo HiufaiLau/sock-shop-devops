@@ -1,11 +1,7 @@
-output "node_addresses" {
-  value = ["${aws_instance.ci-sockshop-k8s-node.*.public_dns}"]
+output "alb_dns_name" {
+  value = aws_lb.this.dns_name
 }
 
-output "master_address" {
-  value = "${aws_instance.ci-sockshop-k8s-master.public_dns}"
-}
-
-output "sock_shop_address" {
-  value = "${aws_elb.ci-sockshop-k8s-elb.dns_name}"
+output "node_public_ip" {
+  value = aws_instance.k3s_node.public_ip
 }

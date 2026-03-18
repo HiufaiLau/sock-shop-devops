@@ -1,48 +1,45 @@
-variable "aws_amis" {
-  description = "The AMI to use for setting up the instances."
-  default = {
-    # Ubuntu Xenial 16.04 LTS
-    "eu-west-1" = "ami-844e0bf7"
-  }
+variable "env" {
+  description = "Environment name"
+  type        = string
+  default     = "staging"
 }
 
 variable "aws_region" {
-  description = "The AWS region to create things in."
+  description = "AWS region"
+  type        = string
   default     = "eu-west-1"
 }
 
-variable "bastion_security_group" {
-  description = "The id of the security group where the bastion host resides."
-}
-
-variable "instance_user" {
-  description = "The user account to use on the instances to run the scripts."
-  default     = "ubuntu"
-}
-
 variable "key_name" {
-  description = "Name of the SSH keypair to use in AWS."
+  description = "EC2 SSH key pair name"
+  type        = string
+}
+
+variable "bastion_cidr_block" {
+  description = "Your public IP in CIDR format for SSH"
+  type        = string
 }
 
 variable "master_instance_type" {
-  description = "The instance type to use for the Kubernetes master."
-  default     = "m3.large"
+  description = "EC2 type for k3s server"
+  type        = string
+  default     = "t3.large"
 }
 
-variable "node_instance_type" {
-  description = "The instance type to use for the Kubernetes nodes."
-  default     = "m4.xlarge"
+variable "vpc_cidr" {
+  description = "CIDR block for VPC"
+  type        = string
+  default     = "10.10.0.0/16"
 }
 
-variable "nodecount" {
-  description = "The number of nodes in the cluster."
-  default     = "4"
+variable "azs" {
+  description = "Availability zones"
+  type        = list(string)
+  default     = ["eu-west-1a", "eu-west-1b", "eu-west-1c"]
 }
 
-variable "private_key_file" {
-  description = "The private key for connection to the instances as the user. Corresponds to the key_name variable."
-}
-
-variable "weave_cloud_token" {
-  description = "Token from Weave Cloud"
+variable "public_subnets_cidrs" {
+  description = "CIDRs for public subnets"
+  type        = list(string)
+  default     = ["10.10.1.0/24", "10.10.2.0/24", "10.10.3.0/24"]
 }

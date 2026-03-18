@@ -1,11 +1,15 @@
-output "node_addresses" {
-  value = ["${aws_instance.k8s-node.*.public_ip}"]
+output "vpc_id" {
+  value = module.vpc.vpc_id
 }
 
-output "master_address" {
-  value = "${aws_instance.k8s-master.public_ip}"
+output "public_subnets" {
+  value = module.vpc.public_subnets
 }
 
-output "sock_shop_address" {
-  value = "${aws_elb.microservices-demo-staging-k8s.dns_name}"
+output "alb_dns_name" {
+  value = aws_lb.staging_alb.dns_name
+}
+
+output "server_public_ip" {
+  value = aws_instance.k3s_server.public_ip
 }
