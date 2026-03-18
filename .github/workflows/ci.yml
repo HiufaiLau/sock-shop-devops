@@ -12,13 +12,15 @@ jobs:
     env:
       COMPLETE_DEMO_DIR: deploy/kubernetes/
       COMPLETE_DEMO_IMAGE: manifests-image
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
       - name: Build manifests check image
+        shell: bash
         env:
           DOCKER_BUILDKIT: 1
-        shell: bash
         run: |
           set -euo pipefail
           docker build -t "${COMPLETE_DEMO_IMAGE}" "${COMPLETE_DEMO_DIR}"
@@ -28,14 +30,16 @@ jobs:
         run: |
           set -euo pipefail
           docker run --rm -v "${{ github.workspace }}:/workdir" \
-            "${COMPLETE_DEMO_IMAGE}" make -C "${COMPLETE_DEMO_DIR}" check-complete-demo
+            "${COMPLETE_DEMO_IMAGE}" \
+            make -C "${COMPLETE_DEMO_DIR}" check-complete-demo
 
   kubeconform:
     name: Validate Kubernetes YAML (kubeconform)
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
       - name: Install kubeconform
         shell: bash
@@ -59,6 +63,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
           find deploy/kubernetes -type f \( -name "*.yaml" -o -name "*.yml" \) \
             ! -path "*/helm-chart/*" \
             ! -path "*/terraform/*" \
@@ -83,7 +88,9 @@ jobs:
           helm template sock-shop deploy/kubernetes/helm-chart \
             --namespace sock-shop \
             > /tmp/sock-shop-rendered.yaml
+
           test -s /tmp/sock-shop-rendered.yaml
+          head -n 40 /tmp/sock-shop-rendered.yaml
 
       - name: Validate rendered Helm manifests
         shell: bash
@@ -99,7 +106,9 @@ jobs:
 
   kind-deploy-smoke:
     name: Kind deploy smoke test
-    needs: [complete-demo-sync-check, kubeconform]
+    needs:
+      - complete-demo-sync-check
+      - kubeconform
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
@@ -107,13 +116,21 @@ jobs:
       KIND_NODE_IMAGE: kindest/node:v1.27.3
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
       - name: Set up kind
         uses: engineerd/setup-kind@v0.6.2
         with:
           version: ${{ env.KIND_VERSION }}
           image: ${{ env.KIND_NODE_IMAGE }}
+
+      - name: Show cluster info
+        shell: bash
+        run: |
+          set -euo pipefail
+          kubectl cluster-info
+          kubectl get nodes -o wide
 
       - name: Deploy complete demo
         shell: bash
@@ -125,9 +142,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
+          kubectl -n sock-shop get deploy -o name
+
           for d in $(kubectl -n sock-shop get deploy -o name); do
+            echo "Waiting for rollout: $d"
             kubectl -n sock-shop rollout status "$d" --timeout=10m
           done
+
           kubectl get pods -A -o wide
 
       - name: Smoke test frontend
@@ -144,7 +166,14 @@ jobs:
         if: failure()
         shell: bash
         run: |
+          echo "=== Pods ==="
           kubectl get pods -A -o wide || true
+
+          echo "=== Sock-shop events ==="
           kubectl -n sock-shop get events --sort-by=.lastTimestamp | tail -n 100 || true
+
+          echo "=== Sock-shop pod descriptions ==="
           kubectl -n sock-shop describe pods || true
+
+          echo "=== Node allocation ==="
           kubectl describe node | sed -n '/Allocated resources/,+20p' || true
