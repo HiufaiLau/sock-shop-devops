@@ -110,24 +110,11 @@ jobs:
           chmod 600 ~/.kube/config
           kubectl get nodes -o wide
 
-      - name: Install nginx ingress (staging)
-        shell: bash
-        run: |
-          set -euo pipefail
-          helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
-          helm repo update
-          helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
-            -n ingress-nginx --create-namespace \
-            --set controller.service.type=NodePort \
-            --set controller.service.nodePorts.http=30080 \
-            --set controller.service.nodePorts.https=30443
-
       - name: Deploy app (staging)
         shell: bash
         run: |
           set -euo pipefail
           kubectl apply -f deploy/kubernetes/complete-demo.yaml
-          kubectl apply -f platform/k8s/ingress/sockshop-ingress.yaml
 
       - name: Wait + smoke test (staging)
         shell: bash
@@ -242,24 +229,11 @@ jobs:
           chmod 600 ~/.kube/config
           kubectl get nodes -o wide
 
-      - name: Install nginx ingress (production)
-        shell: bash
-        run: |
-          set -euo pipefail
-          helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
-          helm repo update
-          helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
-            -n ingress-nginx --create-namespace \
-            --set controller.service.type=NodePort \
-            --set controller.service.nodePorts.http=30080 \
-            --set controller.service.nodePorts.https=30443
-
       - name: Deploy app (production)
         shell: bash
         run: |
           set -euo pipefail
           kubectl apply -f deploy/kubernetes/complete-demo.yaml
-          kubectl apply -f platform/k8s/ingress/sockshop-ingress.yaml
 
       - name: Wait + smoke test (production)
         shell: bash
