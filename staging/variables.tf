@@ -19,6 +19,7 @@ variable "key_name" {
 variable "bastion_cidr_block" {
   description = "Your public IP in CIDR format for SSH"
   type        = string
+  default     = "0.0.0.0/0"  # Allow from anywhere for CI/CD - restrict in production
 }
 
 variable "master_instance_type" {
