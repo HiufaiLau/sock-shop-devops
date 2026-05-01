@@ -51,37 +51,70 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cd infra/envs/staging
+          cd staging
           terraform init
           terraform apply -auto-approve
+
+      - name: Get instance ID and wait for SSM
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd staging
+
+          # Get instance ID from Terraform output
+          INSTANCE_ID=$(terraform output -raw server_instance_id)
+
+          echo "Instance ID: $INSTANCE_ID"
+          echo "INSTANCE_ID=$INSTANCE_ID" >> $GITHUB_ENV
+
+          # Wait for SSM agent to be online
+          echo "Waiting for SSM agent to be ready..."
+          timeout 300 bash -c "until aws ssm describe-instance-information --filters \"Key=InstanceIds,Values=$INSTANCE_ID\" --query \"InstanceInformationList[0].PingStatus\" --output text | grep -q Online; do echo 'Waiting for SSM...'; sleep 10; done"
+          echo "SSM agent is online!"
 
       - name: Set kubeconfig (staging)
         shell: bash
         run: |
           set -euo pipefail
+          cd staging
+          SERVER_IP=$(terraform output -raw server_public_ip)
+
+          # Wait for K3s to be ready using SSM
+          echo "Waiting for K3s to be ready..."
+          timeout 300 bash -c "until aws ssm send-command \
+            --instance-ids \"$INSTANCE_ID\" \
+            --document-name \"AWS-RunShellScript\" \
+            --parameters 'commands=[\"test -f /etc/rancher/k3s/k3s.yaml\"]' \
+            --query \"Command.CommandId\" --output text > /tmp/cmd.id && \
+            aws ssm wait command-executed --command-id \$(cat /tmp/cmd.id) --instance-id \"$INSTANCE_ID\" 2>/dev/null; do echo 'Waiting for K3s...'; sleep 10; done"
+
+          # Fetch kubeconfig using SSM
+          echo "Fetching kubeconfig via SSM..."
+          CMD_ID=$(aws ssm send-command \
+            --instance-ids "$INSTANCE_ID" \
+            --document-name "AWS-RunShellScript" \
+            --parameters 'commands=["cat /etc/rancher/k3s/k3s.yaml"]' \
+            --query "Command.CommandId" --output text)
+
+          # Wait for command to complete
+          aws ssm wait command-executed --command-id "$CMD_ID" --instance-id "$INSTANCE_ID"
+
+          # Get the kubeconfig content
           mkdir -p ~/.kube
-          echo "${{ secrets.KUBECONFIG_B64 }}" | base64 -d > ~/.kube/config
+          aws ssm get-command-invocation \
+            --command-id "$CMD_ID" \
+            --instance-id "$INSTANCE_ID" \
+            --query "StandardOutputContent" --output text | \
+            sed "s/127.0.0.1/${SERVER_IP}/g" > ~/.kube/config
+
           chmod 600 ~/.kube/config
           kubectl get nodes -o wide
-
-      - name: Install nginx ingress (staging)
-        shell: bash
-        run: |
-          set -euo pipefail
-          helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
-          helm repo update
-          helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
-            -n ingress-nginx --create-namespace \
-            --set controller.service.type=NodePort \
-            --set controller.service.nodePorts.http=30080 \
-            --set controller.service.nodePorts.https=30443
 
       - name: Deploy app (staging)
         shell: bash
         run: |
           set -euo pipefail
           kubectl apply -f deploy/kubernetes/complete-demo.yaml
-          kubectl apply -f platform/k8s/ingress/sockshop-ingress.yaml
 
       - name: Wait + smoke test (staging)
         shell: bash
@@ -137,37 +170,70 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cd infra/envs/production
+          cd production
           terraform init
           terraform apply -auto-approve
+
+      - name: Get instance ID and wait for SSM
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd production
+
+          # Get instance ID from Terraform output
+          INSTANCE_ID=$(terraform output -raw server_instance_id)
+
+          echo "Instance ID: $INSTANCE_ID"
+          echo "INSTANCE_ID=$INSTANCE_ID" >> $GITHUB_ENV
+
+          # Wait for SSM agent to be online
+          echo "Waiting for SSM agent to be ready..."
+          timeout 300 bash -c "until aws ssm describe-instance-information --filters \"Key=InstanceIds,Values=$INSTANCE_ID\" --query \"InstanceInformationList[0].PingStatus\" --output text | grep -q Online; do echo 'Waiting for SSM...'; sleep 10; done"
+          echo "SSM agent is online!"
 
       - name: Set kubeconfig (production)
         shell: bash
         run: |
           set -euo pipefail
+          cd production
+          SERVER_IP=$(terraform output -raw server_public_ip)
+
+          # Wait for K3s to be ready using SSM
+          echo "Waiting for K3s to be ready..."
+          timeout 300 bash -c "until aws ssm send-command \
+            --instance-ids \"$INSTANCE_ID\" \
+            --document-name \"AWS-RunShellScript\" \
+            --parameters 'commands=[\"test -f /etc/rancher/k3s/k3s.yaml\"]' \
+            --query \"Command.CommandId\" --output text > /tmp/cmd.id && \
+            aws ssm wait command-executed --command-id \$(cat /tmp/cmd.id) --instance-id \"$INSTANCE_ID\" 2>/dev/null; do echo 'Waiting for K3s...'; sleep 10; done"
+
+          # Fetch kubeconfig using SSM
+          echo "Fetching kubeconfig via SSM..."
+          CMD_ID=$(aws ssm send-command \
+            --instance-ids "$INSTANCE_ID" \
+            --document-name "AWS-RunShellScript" \
+            --parameters 'commands=["cat /etc/rancher/k3s/k3s.yaml"]' \
+            --query "Command.CommandId" --output text)
+
+          # Wait for command to complete
+          aws ssm wait command-executed --command-id "$CMD_ID" --instance-id "$INSTANCE_ID"
+
+          # Get the kubeconfig content
           mkdir -p ~/.kube
-          echo "${{ secrets.KUBECONFIG_B64 }}" | base64 -d > ~/.kube/config
+          aws ssm get-command-invocation \
+            --command-id "$CMD_ID" \
+            --instance-id "$INSTANCE_ID" \
+            --query "StandardOutputContent" --output text | \
+            sed "s/127.0.0.1/${SERVER_IP}/g" > ~/.kube/config
+
           chmod 600 ~/.kube/config
           kubectl get nodes -o wide
-
-      - name: Install nginx ingress (production)
-        shell: bash
-        run: |
-          set -euo pipefail
-          helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
-          helm repo update
-          helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
-            -n ingress-nginx --create-namespace \
-            --set controller.service.type=NodePort \
-            --set controller.service.nodePorts.http=30080 \
-            --set controller.service.nodePorts.https=30443
 
       - name: Deploy app (production)
         shell: bash
         run: |
           set -euo pipefail
           kubectl apply -f deploy/kubernetes/complete-demo.yaml
-          kubectl apply -f platform/k8s/ingress/sockshop-ingress.yaml
 
       - name: Wait + smoke test (production)
         shell: bash
