@@ -17,15 +17,20 @@ apt-get install -y curl wget git
 # Install K3s
 echo "Installing K3s version ${k3s_version}..."
 
-# Get private IP; use the pre-allocated Elastic IP for the TLS SAN so the cert matches on first boot
-PRIVATE_IP=$(curl -s http://169.254.169.254/latest/meta-data/local-ipv4)
+# Get private IP. K3s advertises it for the in-cluster API endpoint; the
+# public/Elastic IP is deliberately NOT used (6443 is closed, access is via SSM).
+TOKEN=$(curl -s -X PUT http://169.254.169.254/latest/api/token -H "X-aws-ec2-metadata-token-ttl-seconds: 300")
+PRIVATE_IP=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/local-ipv4)
+
+mkdir -p /etc/rancher/k3s
+cat > /etc/rancher/k3s/config.yaml <<CFG
+node-ip: "$PRIVATE_IP"
+advertise-address: "$PRIVATE_IP"
+CFG
 
 curl -sfL https://get.k3s.io | INSTALL_K3S_VERSION="${k3s_version}" sh -s - \
   --write-kubeconfig-mode 644 \
-  --disable traefik \
-  --node-external-ip="${elastic_ip}" \
-  --node-ip="$PRIVATE_IP" \
-  --tls-san="${elastic_ip}"
+  --disable traefik
 
 # Wait for K3s to be ready
 echo "Waiting for K3s to be ready..."

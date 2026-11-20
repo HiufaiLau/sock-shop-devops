@@ -148,7 +148,6 @@ resource "aws_instance" "k3s_server" {
 
   user_data = base64encode(templatefile("${path.module}/user-data.sh", {
     k3s_version = var.k3s_version
-    elastic_ip  = aws_eip.k3s_server.public_ip
   }))
 
   tags = {
@@ -162,7 +161,7 @@ resource "aws_instance" "k3s_server" {
   }
 }
 
-# Elastic IP allocated before the instance so its IP can be baked into the K3s TLS SAN at boot time
+# Elastic IP: stable public address for the instance (outbound traffic). Not used by K3s.
 resource "aws_eip" "k3s_server" {
   domain = "vpc"
 
