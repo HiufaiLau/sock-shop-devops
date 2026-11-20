@@ -56,73 +56,15 @@ resource "aws_security_group" "k3s_server" {
   description = "Security group for K3s server"
   vpc_id      = module.vpc.vpc_id
 
-  # SSH access (optional - only needed if you want direct SSH)
+  # No SSH (22) and no K3s API (6443) from the internet: CI/CD and admins
+  # reach the node through AWS SSM. The only inbound traffic is the
+  # front-end NodePort, and only from the load balancer.
   ingress {
-    description = "SSH from bastion"
-    from_port   = 22
-    to_port     = 22
-    protocol    = "tcp"
-    cidr_blocks = [var.bastion_cidr_block]
-  }
-
-  # K3s API server
-  ingress {
-    description = "K3s API"
-    from_port   = 6443
-    to_port     = 6443
-    protocol    = "tcp"
-    cidr_blocks = [var.bastion_cidr_block]
-  }
-
-  # HTTP
-  ingress {
-    description = "HTTP"
-    from_port   = 80
-    to_port     = 80
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  # NodePort range (30000-32767)
-  ingress {
-    description = "NodePort HTTP"
-    from_port   = 30080
-    to_port     = 30080
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  ingress {
-    description = "NodePort HTTPS"
-    from_port   = 30443
-    to_port     = 30443
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  ingress {
-    description = "Grafana"
-    from_port   = 31300
-    to_port     = 31300
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  ingress {
-    description = "Prometheus"
-    from_port   = 31090
-    to_port     = 31090
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  # HTTPS
-  ingress {
-    description = "HTTPS"
-    from_port   = 443
-    to_port     = 443
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
+    description     = "Sock Shop front-end NodePort from the ALB only"
+    from_port       = 30080
+    to_port         = 30080
+    protocol        = "tcp"
+    security_groups = [aws_security_group.alb.id]
   }
 
   # Egress - allow all outbound

@@ -16,16 +16,10 @@ variable "key_name" {
   default     = null
 }
 
-variable "bastion_cidr_block" {
-  description = "Your public IP in CIDR format for SSH"
-  type        = string
-  default     = "0.0.0.0/0"  # Allow from anywhere for CI/CD - restrict in production
-}
-
 variable "master_instance_type" {
   description = "EC2 type for k3s server"
   type        = string
-  default     = "t3.large"
+  default     = "t3.medium"
 }
 
 variable "vpc_cidr" {

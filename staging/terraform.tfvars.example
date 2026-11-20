@@ -1,9 +1,6 @@
 # Optional: Only needed if you want SSH access for debugging
 # key_name           = "your-keypair"
 
-# Your public IP for K3s API access (get it from https://ifconfig.me)
-bastion_cidr_block = "0.0.0.0/0"
-
 env = "staging"
 
 vpc_cidr = "10.10.0.0/16"

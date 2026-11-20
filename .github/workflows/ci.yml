@@ -167,6 +167,7 @@ jobs:
           kubectl -n sock-shop describe pods || true
           kubectl describe node | sed -n '/Allocated resources/,+20p' || true
 
+  # Runs only when every check above is green, only for pushes to staging.
   deploy-staging:
     name: Deploy staging
     if: github.event_name == 'push' && github.ref == 'refs/heads/staging'
@@ -174,75 +175,5 @@ jobs:
       - complete-demo-sync-check
       - kubeconform
       - kind-deploy-smoke
-    runs-on: ubuntu-latest
-    environment: staging
-    env:
-      AWS_REGION: ${{ secrets.AWS_REGION }}
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ secrets.AWS_REGION }}
-
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
-
-      - name: Terraform init
-        working-directory: staging
-        shell: bash
-        run: |
-          set -euo pipefail
-          terraform init
-
-      - name: Terraform apply staging
-        working-directory: staging
-        shell: bash
-        run: |
-          set -euo pipefail
-          terraform apply -auto-approve
-
-  deploy-production:
-    name: Deploy production
-    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
-    needs:
-      - complete-demo-sync-check
-      - kubeconform
-      - kind-deploy-smoke
-    runs-on: ubuntu-latest
-    environment: production
-    env:
-      AWS_REGION: ${{ secrets.AWS_REGION }}
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ secrets.AWS_REGION }}
-
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
-
-      - name: Terraform init
-        working-directory: production
-        shell: bash
-        run: |
-          set -euo pipefail
-          terraform init
-
-      - name: Terraform apply production
-        working-directory: production
-        shell: bash
-        run: |
-          set -euo pipefail
-          terraform apply -auto-approve
+    uses: ./.github/workflows/cd.yml
+    secrets: inherit

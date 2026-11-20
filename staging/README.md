@@ -5,9 +5,9 @@ This directory contains Terraform configuration to deploy a K3s (lightweight Kub
 ## Architecture
 
 - **VPC**: Custom VPC with public subnets across 3 availability zones
-- **EC2 Instance**: Single t3.large instance running K3s
+- **EC2 Instance**: Single t3.medium instance running K3s (Sock Shop + Prometheus/Grafana)
 - **Application Load Balancer**: ALB to route traffic to the K3s NodePort
-- **Security Groups**: Configured for HTTP/HTTPS traffic and K3s API access
+- **Security Groups**: The instance accepts only NodePort 30080, and only from the ALB. No SSH (22), no K3s API (6443), no public NodePorts
 - **IAM Roles**: EC2 instance profile with SSM permissions (no SSH keys needed!)
 
 ## Prerequisites
@@ -36,10 +36,6 @@ azs = [
   "us-east-1b",
   "us-east-1c"
 ]
-
-# Optional: Restrict K3s API access to your IP
-# Get your IP: curl ifconfig.me
-bastion_cidr_block = "YOUR.IP.ADDRESS/32"
 ```
 
 ### Step 2: Initialize Terraform
@@ -63,56 +59,45 @@ terraform apply
 
 ## Accessing the Cluster
 
-### Option 1: Using AWS Systems Manager (Recommended - No SSH Key Needed!)
+Ports 22 and 6443 are closed, so all access goes through AWS SSM
+(needs the [Session Manager plugin](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html)).
 
 ```bash
-# Get the instance ID
 INSTANCE_ID=$(terraform output -raw server_instance_id)
 
-# Fetch kubeconfig using SSM
-CMD_ID=$(aws ssm send-command \
-  --instance-ids "$INSTANCE_ID" \
-  --document-name "AWS-RunShellScript" \
-  --parameters 'commands=["cat /etc/rancher/k3s/k3s.yaml"]' \
-  --query "Command.CommandId" --output text)
+# Shell on the node, then use kubectl there
+aws ssm start-session --target "$INSTANCE_ID"
+sudo kubectl get pods -A
 
-# Wait for command to complete
-aws ssm wait command-executed --command-id "$CMD_ID" --instance-id "$INSTANCE_ID"
-
-# Save kubeconfig
-SERVER_IP=$(terraform output -raw server_public_ip)
-aws ssm get-command-invocation \
-  --command-id "$CMD_ID" \
-  --instance-id "$INSTANCE_ID" \
-  --query "StandardOutputContent" --output text | \
-  sed "s/127.0.0.1/${SERVER_IP}/g" > ~/.kube/config-staging
-
-# Use the config
-export KUBECONFIG=~/.kube/config-staging
-kubectl get nodes
+# Or: kubectl from your laptop through an SSM tunnel to the K3s API
+aws ssm start-session --target "$INSTANCE_ID" \
+  --document-name AWS-StartPortForwardingSession \
+  --parameters portNumber=6443,localPortNumber=6443
+# (in another terminal; kubeconfig fetched via `terraform output kubeconfig_command`,
+#  keep server: https://127.0.0.1:6443)
 ```
 
-### Option 2: Using SSH (Optional)
+### Monitoring (Prometheus + Grafana)
 
-If you configured a `key_name` in terraform.tfvars:
+CD deploys `deploy/kubernetes/manifests-monitoring/` into the `monitoring`
+namespace. They are not exposed publicly; open them through an SSM tunnel:
 
 ```bash
-SERVER_IP=$(terraform output -raw server_public_ip)
-ssh ubuntu@$SERVER_IP
-sudo cat /etc/rancher/k3s/k3s.yaml
+# Grafana -> http://localhost:3000 (admin / admin, change it on first login)
+aws ssm start-session --target "$INSTANCE_ID" \
+  --document-name AWS-StartPortForwardingSession \
+  --parameters portNumber=31300,localPortNumber=3000
+
+# Prometheus -> http://localhost:9090
+aws ssm start-session --target "$INSTANCE_ID" \
+  --document-name AWS-StartPortForwardingSession \
+  --parameters portNumber=31090,localPortNumber=9090
 ```
 
 ## Access the Application
 
-After deployment completes:
-
-```bash
-# Get the ALB DNS name
-terraform output alb_dns_name
-
-# Access the application
-curl http://$(terraform output -raw alb_dns_name)
-```
+https://sockshop-staging.link (Route 53 → ACM/HTTPS on the ALB → NodePort 30080).
+HTTP redirects to HTTPS.
 
 ## Resources Created
 
@@ -121,59 +106,72 @@ curl http://$(terraform output -raw alb_dns_name)
 | VPC | Custom VPC with DNS support |
 | Public Subnets | 3 public subnets across AZs |
 | Internet Gateway | For public internet access |
-| EC2 Instance | t3.large running Ubuntu 22.04 + K3s |
-| Security Groups | For K3s server and ALB |
+| EC2 Instance | t3.medium running Ubuntu 22.04 + K3s, Elastic IP |
+| Security Groups | ALB: 80/443 from internet. Instance: 30080 from ALB only |
 | IAM Role | For SSM access (no SSH needed) |
-| Application Load Balancer | Routes traffic to K3s NodePort 30080 |
-| Target Group | Health checks and routing |
+| Application Load Balancer | HTTPS (ACM) + HTTP→HTTPS redirect, routes to NodePort 30080 |
+| Route 53 + ACM | `sockshop-staging.link` alias and DNS-validated certificate |
+| CloudWatch alarm | Stops the instance after 30 min idle (CPU < 5%) |
 
 ## Outputs
 
-After `terraform apply`, you'll see:
-
-- `vpc_id`: VPC identifier
-- `public_subnets`: List of public subnet IDs
-- `alb_dns_name`: **Access your app here!**
-- `server_public_ip`: K3s server public IP
+- `app_url`: **https://sockshop-staging.link**
+- `alb_dns_name`, `vpc_id`, `public_subnets`
+- `server_public_ip`: Elastic IP (not reachable directly; all ports closed)
 - `server_instance_id`: EC2 instance ID for SSM
 - `kubeconfig_command`: SSM command to fetch kubeconfig
 
-## CI/CD Integration
+## CI/CD Flow
 
-The [.github/workflows/cd.yml](../.github/workflows/cd.yml) workflow automatically:
+```
+push to staging ─▶ CI (ci.yml): complete-demo sync check, kubeconform + helm lint,
+                   kind smoke test
+                     │ all green
+                     ▼
+                   CD (cd.yml, called by CI): terraform apply ─▶ start instance if
+                   idle-stopped ─▶ wait for SSM ─▶ upload manifest bundle to S3 ─▶
+                   ssm-run.sh remote-deploy.sh (kubectl apply shop + monitoring,
+                   rollout status, curl :30080) ─▶ curl https://sockshop-staging.link
+```
 
-1. Runs Terraform apply when you push to `staging` branch
-2. Uses AWS SSM (no SSH keys required!) to fetch kubeconfig
-3. Deploys the Sock Shop application
-4. Runs smoke tests
+- `ssm-run.sh`: runs a local script on the node via SSM and waits for it.
+- `remote-deploy.sh`: what runs on the node (kubectl there, so 6443 stays closed).
+- A manual redeploy: Actions → **CD (Deploy)** → Run workflow (branch `staging`).
 
 ## Cost Estimate
 
-Approximate monthly cost (us-east-1):
+Approximate monthly cost (eu-central-1, running 24/7; the idle alarm stops
+the instance when unused, so actual EC2 cost is lower):
 
-- t3.large EC2: ~$60/month
+- t3.medium EC2: ~$35/month
 - Application Load Balancer: ~$20/month
-- EBS Storage (50GB): ~$5/month
-- Data transfer: Variable
+- EBS Storage (50GB gp3): ~$5/month
+- Elastic IP, Route 53 zone, data transfer: a few $/month
 
-**Total: ~$85-100/month**
+**Total: ~$60-70/month at 24/7**
 
 ## Troubleshooting
 
 ### SSM Agent Not Available
 
 If SSM isn't working:
-1. Check that the instance has the IAM role attached
-2. Wait 2-3 minutes after instance creation for SSM agent to register
+1. Check that the instance has the IAM role attached and is running (`make status` / `make up`)
+2. Wait 2-3 minutes after instance start for the SSM agent to register
 3. Check Systems Manager → Fleet Manager in AWS Console
 
 ### K3s Not Ready
 
-Check the user data logs:
 ```bash
 aws ssm start-session --target $(terraform output -raw server_instance_id)
 sudo cat /var/log/user-data.log
 ```
+
+### Pods Pending / OOMKilled
+
+t3.medium has 4 GiB RAM for K3s, 14 shop pods and the monitoring stack.
+Check `kubectl describe node` (Allocated resources) and `free -m` on the node;
+the CD log prints both when a rollout fails. If memory is the limit, raise
+`master_instance_type` back to `t3.large`.
 
 ### Application Not Accessible
 
@@ -186,8 +184,6 @@ aws elbv2 describe-target-health \
 
 ## Cleanup
 
-To destroy all resources:
-
 ```bash
 terraform destroy
 ```
@@ -196,15 +192,8 @@ terraform destroy
 
 ## Security Notes
 
-- ✅ **No SSH keys required** - Uses AWS SSM for secure access
-- ✅ **IAM-based authentication** - More secure than SSH keys
-- ✅ **Security groups** configured for minimal exposure
-- ⚠️ **ALB is public** - Consider adding authentication for production
-- ⚠️ **Update bastion_cidr_block** - Restrict K3s API access to your IP
-
-## Next Steps
-
-1. **Add HTTPS**: Configure ACM certificate and HTTPS listener
-2. **Add monitoring**: CloudWatch dashboards and alarms
-3. **Add backup**: Automated EBS snapshots
-4. **Create production**: Copy this directory to `production/` with prod values
+- ✅ **No inbound SSH or K3s API**: admin and CI access go through AWS SSM (IAM-authenticated)
+- ✅ **Instance only reachable from the ALB** on NodePort 30080
+- ✅ **HTTPS** via ACM on the ALB, HTTP redirects to HTTPS
+- ⚠️ **Grafana uses admin/admin**: only reachable via SSM tunnel, but change it
+- ⚠️ **ALB is public**: consider authentication for production
