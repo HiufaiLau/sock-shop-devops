@@ -7,23 +7,19 @@ variable "env" {
 variable "aws_region" {
   description = "AWS region"
   type        = string
-  default     = "eu-west-1"
+  default     = "eu-central-1"
 }
 
 variable "key_name" {
-  description = "EC2 SSH key pair name"
+  description = "EC2 SSH key pair name (optional - only needed for direct SSH access)"
   type        = string
-}
-
-variable "bastion_cidr_block" {
-  description = "Your public IP in CIDR format for SSH"
-  type        = string
+  default     = null
 }
 
 variable "master_instance_type" {
   description = "EC2 type for k3s server"
   type        = string
-  default     = "t3.large"
+  default     = "t3.medium"
 }
 
 variable "vpc_cidr" {
@@ -35,11 +31,17 @@ variable "vpc_cidr" {
 variable "azs" {
   description = "Availability zones"
   type        = list(string)
-  default     = ["eu-west-1a", "eu-west-1b", "eu-west-1c"]
+  default     = ["eu-central-1a", "eu-central-1b", "eu-central-1c"]
 }
 
 variable "public_subnets_cidrs" {
   description = "CIDRs for public subnets"
   type        = list(string)
   default     = ["10.10.1.0/24", "10.10.2.0/24", "10.10.3.0/24"]
+}
+
+variable "k3s_version" {
+  description = "K3s version to install"
+  type        = string
+  default     = "v1.27.3+k3s1"
 }
