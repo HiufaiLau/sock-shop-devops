@@ -1,5 +1,8 @@
-INSTANCE_ID := i-00ca0ff8512ddd2b3
+# Staging is in account 414772274298. Override AWS_PROFILE if yours is named differently.
+export AWS_PROFILE ?= sockshop
 REGION      := eu-central-1
+# Looked up by Name tag (Terraform can replace the instance); evaluated on use.
+INSTANCE_ID  = $(shell AWS_REGION=$(REGION) staging/find-instance.sh)
 APP_URL     := https://sockshop-staging.link
 
 .PHONY: up down status url

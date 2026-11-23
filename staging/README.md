@@ -62,8 +62,15 @@ terraform apply
 Ports 22 and 6443 are closed, so all access goes through AWS SSM
 (needs the [Session Manager plugin](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html)).
 
+Staging is in AWS account **414772274298**, region **eu-central-1**. Use the CLI
+profile for that account (`sockshop` below); a profile for another account
+(e.g. `terraform_user`) fails with `AccessDeniedException ... ssm:StartSession`.
+If the instance was idle-stopped, start it first with `make up` and give SSM
+2-3 minutes.
+
 ```bash
-INSTANCE_ID=$(terraform output -raw server_instance_id)
+export AWS_PROFILE=sockshop AWS_REGION=eu-central-1
+INSTANCE_ID=$(staging/find-instance.sh)   # run from the repo root; or: terraform output -raw server_instance_id
 
 # Shell on the node, then use kubectl there
 aws ssm start-session --target "$INSTANCE_ID"
@@ -83,7 +90,8 @@ CD deploys `deploy/kubernetes/manifests-monitoring/` into the `monitoring`
 namespace. They are not exposed publicly; open them through an SSM tunnel:
 
 ```bash
-# Grafana -> http://localhost:3000 (admin / admin, change it on first login)
+# Grafana -> http://localhost:3000 (login admin / admin)
+# If 3000 is already used on your machine, pick another localPortNumber (e.g. 3300).
 aws ssm start-session --target "$INSTANCE_ID" \
   --document-name AWS-StartPortForwardingSession \
   --parameters portNumber=31300,localPortNumber=3000

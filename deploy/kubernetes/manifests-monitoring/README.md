@@ -15,12 +15,12 @@ The prometheus server will be exposed on Nodeport `31090`.
 
 ### Grafana
 
-First apply the grafana manifests from 20 to 22:
+Apply the grafana manifests (20 to 22):
 
-`kubectl apply $(ls *-grafana-*.yaml | awk ' { print " -f " $1 }'  | grep -v grafana-import)`
+`kubectl apply $(ls *-grafana-*.yaml | awk ' { print " -f " $1 }')`
 
-Once the grafana pod is in the Running state apply the `23-grafana-import-dash-batch.yaml` manifest to import the Dashboards:
-
-`kubectl apply -f 23-grafana-import-dash-batch.yaml`
+The Prometheus datasource and the dashboards are provisioned from the
+ConfigMaps in `20-grafana-configmap.yaml` every time Grafana starts, so no
+import step is needed and they survive pod restarts. Login: `admin` / `admin`.
 
 Grafana will be exposed on the NodePort `31300` 

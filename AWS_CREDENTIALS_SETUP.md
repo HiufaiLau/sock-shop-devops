@@ -137,7 +137,7 @@ You can use the **AdministratorAccess** policy for testing, but create a custom 
 After configuring credentials:
 
 ```bash
-cd /Users/mobius/Desktop/sock-shop-devops/staging
+cd sock-shop-devops/staging
 
 # Validate configuration
 terraform validate

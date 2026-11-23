@@ -79,6 +79,10 @@ kubectl apply -f deploy/kubernetes/complete-demo.yaml
 echo "=== Deploying monitoring (Prometheus + Grafana) ==="
 # Namespace first so the remaining files can be applied in one go.
 kubectl apply -f deploy/kubernetes/manifests-monitoring/00-monitoring-ns.yaml
+# Grafana now provisions its dashboards from ConfigMaps; remove the old
+# one-shot import Job and its ConfigMap (apply doesn't prune them).
+kubectl -n monitoring delete job/grafana-import-dashboards configmap/grafana-import-dashboards \
+  --ignore-not-found
 kubectl apply -f deploy/kubernetes/manifests-monitoring/
 
 failed=0

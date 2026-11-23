@@ -1,5 +1,23 @@
 # Troubleshooting Guide - Sock Shop Not Accessible
 
+## Before you start: which AWS account
+
+Staging runs in AWS account **414772274298**, region **eu-central-1**. Use the
+AWS CLI profile for that account (named `sockshop` here; other profiles such as
+`terraform_user` point at a different account and get `AccessDenied`).
+
+```bash
+export AWS_PROFILE=sockshop AWS_REGION=eu-central-1
+aws sts get-caller-identity          # Account must be 414772274298
+
+# The instance ID changes when Terraform replaces the server; look it up:
+INSTANCE_ID=$(staging/find-instance.sh)
+```
+
+The instance has no open ports (no SSH, no public NodePorts). Everything goes
+through the ALB (https://sockshop-staging.link) or AWS SSM. It is also stopped
+automatically after 30 min idle: `make status` / `make up`.
+
 ## 🚨 Critical Issues to Fix First
 
 ### 1. System Clock Issue (MUST FIX FIRST!)
@@ -28,18 +46,17 @@ date
 ## 🔍 Why the Application Isn't Working
 
 ### Current Status
-- ❌ **ALB URL**: http://sockshop-staging-alb-812471275.eu-central-1.elb.amazonaws.com/
-- ❌ **Direct URL**: http://3.65.228.51:30080/
-- **Error**: 504 Gateway Timeout or Connection Timeout
+- ❌ **App URL**: https://sockshop-staging.link (via the ALB)
+- **Error**: 502/503/504 from the ALB
+- (There is no direct URL: NodePort 30080 only accepts traffic from the ALB.)
 
 ### Root Causes
 
 **The application isn't working because:**
 
-1. **K3s may not be fully installed yet**
-   - The instance was resized from t3.micro → t3.small
-   - User-data script runs K3s installation
-   - Takes 3-5 minutes after instance starts
+1. **The instance is stopped or K3s is still starting**
+   - The idle alarm stops the instance after 30 min (`make status`, `make up`)
+   - On first boot, user-data installs K3s (3-5 minutes)
 
 2. **Sock Shop pods haven't started**
    - 14 microservices need to download images
@@ -66,7 +83,7 @@ date  # Verify it shows correct time
 
 ```bash
 aws ssm send-command \
-  --instance-ids i-0dd60330cc4a99b2c \
+  --instance-ids "$INSTANCE_ID" \
   --document-name "AWS-RunShellScript" \
   --parameters 'commands=["systemctl is-active k3s"]' \
   --region eu-central-1 \
@@ -82,7 +99,7 @@ Wait 5 seconds, then get the result with the command ID returned above.
 
 ```bash
 aws ssm send-command \
-  --instance-ids i-0dd60330cc4a99b2c \
+  --instance-ids "$INSTANCE_ID" \
   --document-name "AWS-RunShellScript" \
   --parameters 'commands=["tail -50 /var/log/user-data.log"]' \
   --region eu-central-1 \
@@ -94,14 +111,11 @@ aws ssm send-command \
 
 ### Step 4: Deploy Sock Shop (If Not Already Deployed)
 
+Don't apply the upstream manifest by hand. Redeploy this repo's manifests the
+way CD does (Actions → **CD (Deploy)** → Run workflow), or from your checkout:
+
 ```bash
-aws ssm send-command \
-  --instance-ids i-0dd60330cc4a99b2c \
-  --document-name "AWS-RunShellScript" \
-  --parameters 'commands=["kubectl apply -f https://raw.githubusercontent.com/microservices-demo/microservices-demo/master/deploy/kubernetes/complete-demo.yaml"]' \
-  --region eu-central-1 \
-  --query "Command.CommandId" \
-  --output text
+./fix-deployment.sh
 ```
 
 ### Step 5: Wait for Pods to Start (10-15 minutes)
@@ -109,7 +123,7 @@ aws ssm send-command \
 Check pod status:
 ```bash
 aws ssm send-command \
-  --instance-ids i-0dd60330cc4a99b2c \
+  --instance-ids "$INSTANCE_ID" \
   --document-name "AWS-RunShellScript" \
   --parameters 'commands=["kubectl get pods -n sock-shop"]' \
   --region eu-central-1 \
@@ -127,9 +141,15 @@ carts-xxx                  1/1     Running   0          5m
 
 ### Step 6: Test Direct Connection
 
+Port 30080 is not reachable from your laptop; test it on the node via SSM:
+
 ```bash
-# Test if port 30080 responds
-curl -v http://3.65.228.51:30080/ --max-time 5
+aws ssm send-command \
+  --instance-ids "$INSTANCE_ID" \
+  --document-name "AWS-RunShellScript" \
+  --parameters 'commands=["curl -sS -o /dev/null -w %{http_code} http://127.0.0.1:30080/"]' \
+  --query "Command.CommandId" \
+  --output text
 ```
 
 **Expected**: HTML response (Sock Shop homepage)
@@ -137,43 +157,30 @@ curl -v http://3.65.228.51:30080/ --max-time 5
 ### Step 7: Check ALB Target Health
 
 ```bash
-aws elbv2 describe-target-health \
-  --target-group-arn arn:aws:elasticloadbalancing:eu-central-1:414772274298:targetgroup/ssstg-20260422065437631200000004/053bfb4a7553b263 \
-  --region eu-central-1
+ALB_ARN=$(aws elbv2 describe-load-balancers --names sockshop-staging-alb \
+  --query 'LoadBalancers[0].LoadBalancerArn' --output text)
+TG_ARN=$(aws elbv2 describe-target-groups --load-balancer-arn "$ALB_ARN" \
+  --query 'TargetGroups[0].TargetGroupArn' --output text)
+aws elbv2 describe-target-health --target-group-arn "$TG_ARN"
 ```
 
 **Expected**: `"State": "healthy"`
 
 ---
 
-## 🔧 Alternative: Manual Deployment via EC2 Instance Connect
+## 🔧 Shell on the Node (SSM Session Manager)
 
-If SSM isn't working, you can connect directly:
-
-### Option 1: AWS Console
-1. Go to EC2 → Instances
-2. Select: **sockshop-staging-k3s-server**
-3. Click: **Connect** → **EC2 Instance Connect**
-4. Click: **Connect**
-
-Then run:
-```bash
-# Check K3s
-systemctl status k3s
-
-# Deploy Sock Shop
-kubectl apply -f https://raw.githubusercontent.com/microservices-demo/microservices-demo/master/deploy/kubernetes/complete-demo.yaml
-
-# Watch pods start
-kubectl get pods -n sock-shop -w
-```
-
-### Option 2: SSH (If you configured a key)
+SSH and EC2 Instance Connect don't work (port 22 is closed). Use SSM, which
+needs the [Session Manager plugin](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html):
 
 ```bash
-# Note: You didn't configure SSH key, so this won't work unless you add one
-ssh ubuntu@3.65.228.51
+aws ssm start-session --target "$INSTANCE_ID"
+sudo kubectl get pods -A
+sudo kubectl -n sock-shop get pods -w
 ```
+
+Or in the console: EC2 → Instances → **sockshop-staging-k3s-server** →
+Connect → **Session Manager**.
 
 ---
 
@@ -181,7 +188,7 @@ ssh ubuntu@3.65.228.51
 
 | Time | Status | What's Happening |
 |------|--------|------------------|
-| **0 min** | Instance resized | K3s installing |
+| **0 min** | Instance started | K3s starting |
 | **3-5 min** | K3s ready | Can deploy apps |
 | **5-10 min** | Pods starting | Downloading images |
 | **10-15 min** | ✅ Working | App accessible |
@@ -196,7 +203,9 @@ ssh ubuntu@3.65.228.51
 
 ### Issue: Pods stuck in "Pending"
 **Cause**: Insufficient resources
-**Fix**: Instance already upgraded to t3.small (2GB), should be enough
+**Fix**: The node is a t3.medium (4 GiB) running the shop and monitoring. Check
+`kubectl describe node` (Allocated resources); if memory is the limit, set
+`master_instance_type = "t3.large"`
 
 ### Issue: Pods stuck in "ImagePullBackOff"
 **Cause**: Can't download Docker images
@@ -213,7 +222,7 @@ kubectl logs <pod-name> -n sock-shop
 **Possible causes**:
 1. Front-end pod not running
 2. Service not created correctly
-3. Security group blocking port 30080
+3. Security group not allowing 30080 from the ALB security group
 4. Health check path incorrect
 
 **Check service**:
@@ -229,7 +238,7 @@ kubectl get svc -n sock-shop front-end
 If nothing works after 30 minutes:
 
 ```bash
-cd /Users/mobius/Desktop/sock-shop-devops/staging
+cd sock-shop-devops/staging
 
 # Destroy and recreate
 terraform destroy -auto-approve
@@ -246,10 +255,10 @@ terraform apply -auto-approve
 
 ## 📱 Quick Status Check Script
 
-After fixing your system clock, run:
+Run (uses the `sockshop` profile by default):
 
 ```bash
-cd /Users/mobius/Desktop/sock-shop-devops
+cd sock-shop-devops
 ./check-deployment-status.sh
 ```
 
@@ -264,9 +273,9 @@ This checks:
 
 You'll know it's working when:
 
-1. ✅ `curl http://3.65.228.51:30080/` returns HTML
+1. ✅ `curl https://sockshop-staging.link` returns HTML
 2. ✅ Target health shows "healthy"
-3. ✅ Browser shows Sock Shop homepage at ALB URL
+3. ✅ Browser shows Sock Shop homepage at https://sockshop-staging.link
 4. ✅ All 14 pods show "Running" status
 
 ---

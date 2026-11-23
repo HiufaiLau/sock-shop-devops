@@ -1,217 +1,92 @@
 # Sock Shop AWS Deployment - Summary
 
-## ✅ Successfully Completed
+Staging runs Sock Shop on a single-node K3s cluster in AWS Frankfurt (eu-central-1),
+deployed by Terraform and GitHub Actions. Full details: [staging/README.md](staging/README.md).
 
-### 1. Infrastructure Setup
-- **Fixed CD Workflow** ([.github/workflows/cd.yml](.github/workflows/cd.yml))
-  - Corrected Terraform paths (staging → correct directory)
-  - Implemented AWS Systems Manager (SSM) for secure access (no SSH keys needed)
-  - Added proper instance ID retrieval from Terraform outputs
+**App URL:** https://sockshop-staging.link
 
-- **Completed Terraform Configuration** ([staging/]](staging/))
-  - EC2 instance with K3s
-  - Security groups (K3s server + ALB)
-  - IAM roles with SSM permissions
-  - Application Load Balancer
-  - Target groups and health checks
-  - User-data script for K3s installation
+## Infrastructure ([staging/](staging/))
 
-### 2. Tools Installed
-- ✅ Terraform v1.14.9
-- ✅ AWS CLI v2.34.34
-- ✅ kubectl v1.35.4
+- **EC2**: one t3.medium (4 GiB RAM), Ubuntu 22.04 + K3s, with an Elastic IP
+  - Runs the shop (`sock-shop` namespace) and Prometheus/Grafana (`monitoring` namespace)
+  - A CloudWatch alarm stops the instance after 30 min idle (CPU < 5%); CD starts it again
+- **Network**: custom VPC, 3 public subnets across AZs, Internet Gateway
+- **ALB**: HTTPS via ACM, HTTP redirects to HTTPS, forwards to NodePort 30080
+- **Route 53**: `sockshop-staging.link` alias to the ALB, DNS-validated certificate
+- **Security**: the instance only accepts NodePort 30080 from the ALB. SSH (22) and the
+  K3s API (6443) are closed; all admin and CI access goes through AWS SSM
 
-### 3. AWS Infrastructure Deployed (Frankfurt - eu-central-1)
-- ✅ VPC (vpc-0b64ddf69826d4ce1)
-- ✅ 3 Public Subnets across availability zones
-- ✅ Internet Gateway & Route Tables
-- ✅ **EC2 Instance**: i-0dd60330cc4a99b2c (t3.small - 2GB RAM)
-- ✅ **Public IP**: 3.65.228.51
-- ✅ **Application Load Balancer**: sockshop-staging-alb-812471275.eu-central-1.elb.amazonaws.com
-- ✅ Security Groups configured
-- ✅ IAM Roles for SSM
-
-### 4. Configuration Files Created
-- [staging/terraform.tfvars](staging/terraform.tfvars) - Configured for Frankfurt
-- [staging/user-data.sh](staging/user-data.sh) - K3s installation script
-- [staging/README.md](staging/README.md) - Complete documentation
-- [AWS_CREDENTIALS_SETUP.md](AWS_CREDENTIALS_SETUP.md) - Credentials guide
-
-## ⚠️ Current Status
-
-### Instance Upgrade
-- **Initial Deployment**: t3.micro (1GB RAM) - Too small for Sock Shop
-- **Diagnosis**: Instance was overloaded, SSM commands timing out
-- **Solution**: Upgraded to t3.small (2GB RAM)
-- **Result**: Instance restarted, K3s reinstalling
-
-### Application Deployment
-- Sock Shop deployment manifest applied via SSM
-- **Current Issue**: Target health check failing (502 Bad Gateway)
-- **Root Cause**: K3s may still be completing installation, or pods are starting slowly
-
-## 📋 Next Steps to Complete Deployment
-
-### Option 1: Wait for K3s and Pods (Recommended)
-The application may just need more time. After a fresh instance restart, K3s takes 3-5 minutes and pods take another 5-10 minutes.
+Resource IDs (instance, IPs, ALB DNS) change when infrastructure is recreated, so
+read them from Terraform instead of copying them from docs:
 
 ```bash
-# Wait 10 more minutes, then check:
-curl http://sockshop-staging-alb-812471275.eu-central-1.elb.amazonaws.com/
-
-# Check target health:
-aws elbv2 describe-target-health \
-  --target-group-arn arn:aws:elasticloadbalancing:eu-central-1:414772274298:targetgroup/ssstg-20260422065437631200000004/053bfb4a7553b263 \
-  --region eu-central-1
+cd sock-shop-devops/staging
+terraform init
+terraform output
 ```
 
-### Option 2: Manual Verification via kubectl
-Get a fresh kubeconfig and check pod status:
+## CI/CD
+
+Pushing to the `staging` branch runs CI ([ci.yml](.github/workflows/ci.yml)): manifest
+sync check, kubeconform + helm lint, and a kind smoke test. When CI is green it calls CD
+([cd.yml](.github/workflows/cd.yml)), which runs `terraform apply`, starts the instance
+if it was idle-stopped, and deploys the shop and monitoring manifests over SSM
+([staging/ssm-run.sh](staging/ssm-run.sh) → [staging/remote-deploy.sh](staging/remote-deploy.sh)).
+
+Manual redeploy: Actions → **CD (Deploy)** → Run workflow (branch `staging`).
+
+GitHub secrets required: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION` (eu-central-1).
+
+## Accessing the Cluster
 
 ```bash
-cd /Users/mobius/Desktop/sock-shop-devops/staging
+cd sock-shop-devops/staging
+INSTANCE_ID=$(terraform output -raw server_instance_id)
 
-# Get kubeconfig
-CMD_ID=$(aws ssm send-command \
-  --instance-ids i-0dd60330cc4a99b2c \
-  --document-name "AWS-RunShellScript" \
-  --parameters 'commands=["cat /etc/rancher/k3s/k3s.yaml"]' \
-  --query "Command.CommandId" --output text --region eu-central-1)
-
-sleep 5
-
-aws ssm get-command-invocation \
-  --command-id "$CMD_ID" \
-  --instance-id i-0dd60330cc4a99b2c \
-  --region eu-central-1 \
-  --query "StandardOutputContent" --output text | \
-  sed "s/127.0.0.1/3.65.228.51/g" > ~/.kube/config-staging
-
-chmod 600 ~/.kube/config-staging
-
-# Check pods
-export KUBECONFIG=~/.kube/config-staging
-kubectl get pods -n sock-shop
-kubectl get nodes
+# Shell on the node (needs the Session Manager plugin)
+aws ssm start-session --target "$INSTANCE_ID"
+sudo kubectl get pods -A
 ```
 
-### Option 3: Redeploy Application
-If K3s is ready but app isn't deployed:
+Grafana and Prometheus are only reachable through SSM port forwarding; see
+[staging/README.md](staging/README.md#monitoring-prometheus--grafana).
 
-```bash
-export KUBECONFIG=~/.kube/config-staging
-kubectl apply -f /Users/mobius/Desktop/sock-shop-devops/deploy/kubernetes/complete-demo.yaml
+## Cost Estimate
 
-# Wait for pods to be ready (5-10 minutes)
-kubectl get pods -n sock-shop -w
-```
+Running 24/7 (the idle alarm lowers the real EC2 cost):
 
-## 💰 Cost Estimate
-
-**Current Monthly Cost:**
-- t3.small EC2: ~$15/month
+- t3.medium EC2: ~$35/month
 - Application Load Balancer: ~$20/month
-- EBS Storage (50GB): ~$5/month
-- Data transfer: ~$2-5/month
-- **Total: ~$42-45/month**
+- EBS storage (50 GB gp3): ~$5/month
+- Elastic IP, Route 53 zone, data transfer: a few $/month
+- **Total: ~$60-70/month**
 
-## 🔑 Access Information
+## Deployment History
 
-### Infrastructure
-- **Region**: eu-central-1 (Frankfurt, Germany)
-- **VPC**: vpc-0b64ddf69826d4ce1
-- **Instance**: i-0dd60330cc4a99b2c
-- **Public IP**: 3.65.228.51
-- **ALB DNS**: sockshop-staging-alb-812471275.eu-central-1.elb.amazonaws.com
+- **Apr 2026, t3.micro → t3.small** (local `terraform.tfvars` override): 1 GiB RAM was
+  too small; the instance overloaded and SSM timed out.
+- **Nov 2026, t3.large → t3.medium** (default in [staging/variables.tf](staging/variables.tf)):
+  downsized to cut cost. If pods go `Pending`/`OOMKilled`, set
+  `master_instance_type` back to `t3.large`.
+- **Nov 2026, locked down**: closed SSH/6443, moved access to SSM, added HTTPS, deployed
+  monitoring, gated CD on green CI.
+- **Stale Elastic IP fix**: K3s advertised an old EIP, which broke in-cluster DNS and
+  caused crash loops. K3s now advertises the node's private IP, and `remote-deploy.sh`
+  enforces that on every deploy.
 
-### Credentials
-AWS CLI configured at: `~/.aws/credentials`
+For known issues and fixes, see [TROUBLESHOOTING.md](TROUBLESHOOTING.md).
 
-### Kubernetes
-Kubeconfig location: `~/.kube/config-staging`
-
-## 🗑️ Cleanup Instructions
-
-To destroy all resources and stop incurring costs:
+## Cleanup
 
 ```bash
-cd /Users/mobius/Desktop/sock-shop-devops/staging
+cd sock-shop-devops/staging
 terraform destroy
 ```
 
-**Warning**: This will delete ALL resources including data!
+**Warning**: this deletes all staging resources, including data.
 
-## 📝 GitHub Secrets Needed for CD Workflow
+## Related Docs
 
-To enable automated deployments via GitHub Actions:
-
-1. Go to GitHub repo → Settings → Secrets → Actions
-2. Add these secrets:
-   - `AWS_ACCESS_KEY_ID`
-   - `AWS_SECRET_ACCESS_KEY`
-   - `AWS_REGION`: eu-central-1
-
-Then push to `staging` branch to trigger automatic deployment.
-
-## 🐛 Troubleshooting
-
-### If Application Still Shows 502
-
-1. **Check if K3s is running:**
-   ```bash
-   aws ssm send-command \
-     --instance-ids i-0dd60330cc4a99b2c \
-     --document-name "AWS-RunShellScript" \
-     --parameters 'commands=["systemctl status k3s"]' \
-     --region eu-central-1
-   ```
-
-2. **Check user-data log:**
-   ```bash
-   aws ssm send-command \
-     --instance-ids i-0dd60330cc4a99b2c \
-     --document-name "AWS-RunShellScript" \
-     --parameters 'commands=["tail -100 /var/log/user-data.log"]' \
-     --region eu-central-1
-   ```
-
-3. **Access instance directly:**
-   The ALB targets port 30080 on the instance. Test directly:
-   ```bash
-   curl http://3.65.228.51:30080/
-   ```
-
-### If You Need More Resources
-
-Consider upgrading to t3.medium (4GB RAM) for better performance:
-
-```bash
-# Edit staging/terraform.tfvars
-master_instance_type = "t3.medium"
-
-# Apply changes
-terraform apply
-```
-
-## 📚 Documentation
-
-- [staging/README.md](staging/README.md) - Detailed infrastructure documentation
-- [AWS_CREDENTIALS_SETUP.md](AWS_CREDENTIALS_SETUP.md) - AWS credentials setup guide
-- [.github/workflows/cd.yml](.github/workflows/cd.yml) - CD workflow configuration
-
-## 🎯 Summary
-
-**What Works:**
-- ✅ Complete AWS infrastructure deployed
-- ✅ K3s cluster configured and installing
-- ✅ Application Load Balancer routing configured
-- ✅ Security groups and networking
-- ✅ SSM access (no SSH keys needed)
-
-**What Needs Attention:**
-- ⏳ K3s may still be completing installation
-- ⏳ Pods may still be starting (takes 5-10 minutes)
-- ⏳ Health checks will pass once front-end pod responds on port 80
-
-**Recommended Next Action:**
-Wait 10-15 minutes and test the ALB URL again. The application should be accessible once all pods finish starting.
+- [staging/README.md](staging/README.md): infrastructure, access, monitoring, troubleshooting
+- [AWS_CREDENTIALS_SETUP.md](AWS_CREDENTIALS_SETUP.md): AWS credentials setup
+- [TROUBLESHOOTING.md](TROUBLESHOOTING.md): past issues and fixes

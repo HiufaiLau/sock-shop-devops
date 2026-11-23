@@ -1,88 +1,48 @@
-#!/bin/bash
-# Script to fix and deploy Sock Shop application
+#!/usr/bin/env bash
+# Manually redeploy Sock Shop + monitoring to staging from your local checkout,
+# the same way CD does: bundle the manifests, upload to S3, run
+# staging/remote-deploy.sh on the node through SSM.
+#
+# Normally you don't need this: pushing to `staging` (or Actions → CD (Deploy)
+# → Run workflow) does the same after CI passes. This deploys whatever is in
+# your working tree, unreviewed, so use it only to recover a broken staging.
+#
+# Uses AWS_PROFILE (default "sockshop", account 414772274298) and eu-central-1.
+set -euo pipefail
+cd "$(dirname "$0")"
 
-set -e
+export AWS_PROFILE="${AWS_PROFILE:-sockshop}"
+export AWS_REGION="${AWS_REGION:-eu-central-1}"
+BUCKET="sockshop-terraform-state-414772274298"
+KEY="deploy-bundles/staging/manual-$(date +%Y%m%d%H%M%S).tgz"
 
-INSTANCE_ID="i-0dd60330cc4a99b2c"
-REGION="eu-central-1"
-
-echo "🔧 Fixing Sock Shop Deployment..."
+echo "🔧 Redeploying Sock Shop staging from local checkout (profile: $AWS_PROFILE)"
 echo "=================================="
 
-# Function to run command via SSM
-run_ssm_command() {
-  local cmd="$1"
-  local desc="$2"
+INSTANCE_ID=$(staging/find-instance.sh)
+STATE=$(aws ec2 describe-instances --instance-ids "$INSTANCE_ID" \
+  --query 'Reservations[0].Instances[0].State.Name' --output text)
+if [ "$STATE" != "running" ]; then
+  echo "Instance $INSTANCE_ID is $STATE. Start it first with: make up (then wait ~2-3 min for SSM)"
+  exit 1
+fi
 
-  echo ""
-  echo "📝 $desc"
+WORK=$(mktemp -d)
+trap 'rm -rf "$WORK"; aws s3 rm "s3://$BUCKET/$KEY" >/dev/null 2>&1 || true' EXIT
 
-  CMD_ID=$(aws ssm send-command \
-    --instance-ids "$INSTANCE_ID" \
-    --document-name "AWS-RunShellScript" \
-    --parameters "commands=[\"$cmd\"]" \
-    --query "Command.CommandId" \
-    --output text \
-    --region "$REGION")
+echo "📦 Uploading manifest bundle"
+tar -czf "$WORK/bundle.tgz" deploy/kubernetes/complete-demo.yaml deploy/kubernetes/manifests-monitoring
+aws s3 cp "$WORK/bundle.tgz" "s3://$BUCKET/$KEY" --only-show-errors
+URL=$(aws s3 presign "s3://$BUCKET/$KEY" --expires-in 1800)
 
-  echo "   Command ID: $CMD_ID"
-  echo "   Waiting for command to complete..."
+BUNDLE_URL="$URL" python3 -c '
+import os, sys
+s = open("staging/remote-deploy.sh").read()
+open(sys.argv[1], "w").write(s.replace("__BUNDLE_URL__", os.environ["BUNDLE_URL"]))
+' "$WORK/remote-deploy.sh"
 
-  # Wait for command
-  sleep 10
-
-  # Get output
-  aws ssm get-command-invocation \
-    --command-id "$CMD_ID" \
-    --instance-id "$INSTANCE_ID" \
-    --region "$REGION" \
-    --query "StandardOutputContent" \
-    --output text 2>/dev/null || echo "   (Command still running or no output)"
-}
-
-# Check K3s status
-run_ssm_command "systemctl status k3s | head -10" "Checking K3s status"
-
-# Check if namespace exists
-run_ssm_command "kubectl get namespace sock-shop 2>&1 || echo 'Namespace does not exist'" "Checking sock-shop namespace"
-
-# Deploy Sock Shop
-echo ""
-echo "🚀 Deploying Sock Shop application..."
-CMD_ID=$(aws ssm send-command \
-  --instance-ids "$INSTANCE_ID" \
-  --document-name "AWS-RunShellScript" \
-  --parameters 'commands=["kubectl apply -f https://raw.githubusercontent.com/microservices-demo/microservices-demo/master/deploy/kubernetes/complete-demo.yaml"]' \
-  --query "Command.CommandId" \
-  --output text \
-  --region "$REGION")
-
-echo "   Deployment command sent: $CMD_ID"
-echo "   Waiting 15 seconds..."
-sleep 15
-
-aws ssm get-command-invocation \
-  --command-id "$CMD_ID" \
-  --instance-id "$INSTANCE_ID" \
-  --region "$REGION" \
-  --query "StandardOutputContent" \
-  --output text 2>/dev/null || echo "   Still deploying..."
-
-# Check pods
-echo ""
-echo "📊 Checking pod status..."
-sleep 10
-run_ssm_command "kubectl get pods -n sock-shop" "Pod status"
-
-# Check front-end service
-echo ""
-echo "🌐 Checking front-end service..."
-run_ssm_command "kubectl get svc -n sock-shop front-end" "Front-end service"
+echo "🚀 Running remote-deploy.sh on $INSTANCE_ID (can take ~10 min)"
+staging/ssm-run.sh "$INSTANCE_ID" "$WORK/remote-deploy.sh" 1500
 
 echo ""
-echo "=================================="
-echo "✅ Deployment commands sent!"
-echo ""
-echo "⏰ Wait 5-10 minutes for all pods to start"
-echo "🔍 Check status with: ./check-deployment-status.sh"
-echo "🌐 Then visit: http://sockshop-staging-alb-812471275.eu-central-1.elb.amazonaws.com/"
+echo "✅ Done. Check: ./check-deployment-status.sh  or  https://sockshop-staging.link"
