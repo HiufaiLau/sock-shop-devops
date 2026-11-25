@@ -377,7 +377,10 @@ resource "aws_lb_listener" "https" {
 
 data "aws_caller_identity" "current" {}
 
-# Auto-stop when CPU < 5% for 30 minutes (idle = nobody using the app)
+# Auto-stop when CPU < 15% for 30 minutes (idle = nobody using the app).
+# The idle floor is ~12-13% (K3s, Prometheus, the JVM services and bot
+# traffic), so a lower threshold never fires. Measured Nov 2026 on t3.medium;
+# re-check the CPUUtilization metric if the instance type or workload changes.
 resource "aws_cloudwatch_metric_alarm" "idle_stop" {
   alarm_name          = "sockshop-${var.env}-idle-stop"
   comparison_operator = "LessThanThreshold"
@@ -386,8 +389,8 @@ resource "aws_cloudwatch_metric_alarm" "idle_stop" {
   namespace           = "AWS/EC2"
   period              = 300
   statistic           = "Average"
-  threshold           = 5
-  alarm_description   = "Stop instance after 30 min of idle (CPU < 5%)"
+  threshold           = 15
+  alarm_description   = "Stop instance after 30 min of idle (CPU < 15%)"
 
   alarm_actions = [
     "arn:aws:swf:${var.aws_region}:${data.aws_caller_identity.current.account_id}:action/actions/AWS_EC2.InstanceId.Stop/1.0"

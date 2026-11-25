@@ -118,7 +118,7 @@ HTTP redirects to HTTPS.
 | IAM Role | For SSM access (no SSH needed) |
 | Application Load Balancer | HTTPS (ACM) + HTTP→HTTPS redirect, routes to NodePort 30080 |
 | Route 53 + ACM | `sockshop-staging.link` alias and DNS-validated certificate |
-| CloudWatch alarm | Stops the instance after 30 min idle (CPU < 5%) |
+| CloudWatch alarm | Stops the instance after 30 min idle (CPU < 15%) |
 
 ## Outputs
 
