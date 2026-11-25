@@ -9,7 +9,13 @@ APP_URL     := https://sockshop-staging.link
 
 ## Start the app (instance boots in ~2 minutes)
 up:
-	aws ec2 start-instances --region $(REGION) --instance-ids $(INSTANCE_ID) --output text --query 'StartingInstances[0].CurrentState.Name'
+	@id=$(INSTANCE_ID); \
+	state=$$(aws ec2 describe-instances --region $(REGION) --instance-ids $$id --query 'Reservations[0].Instances[0].State.Name' --output text); \
+	if [ "$$state" = "stopping" ]; then \
+		echo "Instance is still stopping; waiting for it to reach 'stopped'..."; \
+		aws ec2 wait instance-stopped --region $(REGION) --instance-ids $$id; \
+	fi; \
+	aws ec2 start-instances --region $(REGION) --instance-ids $$id --output text --query 'StartingInstances[0].CurrentState.Name'
 	@echo "Starting... app will be ready at $(APP_URL) in ~2 minutes"
 
 ## Stop the app manually (also auto-stops after 30 min idle)
