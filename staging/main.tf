@@ -20,8 +20,8 @@ module "vpc" {
   name = "sockshop-${var.env}-vpc"
   cidr = var.vpc_cidr
 
-  azs             = var.azs
-  public_subnets  = var.public_subnets_cidrs
+  azs                = var.azs
+  public_subnets     = var.public_subnets_cidrs
   enable_nat_gateway = false
   single_nat_gateway = false
 
@@ -131,9 +131,12 @@ resource "aws_iam_instance_profile" "k3s_server" {
 
 # K3s Server EC2 Instance
 resource "aws_instance" "k3s_server" {
-  ami                    = data.aws_ami.ubuntu.id
+  # restore.sh sets restore_ami_id (an image of the latest snapshot) and
+  # server_subnet_index (which AZ). Normal applies use a fresh Ubuntu image in
+  # the first subnet.
+  ami                    = var.restore_ami_id != "" ? var.restore_ami_id : data.aws_ami.ubuntu.id
   instance_type          = var.master_instance_type
-  subnet_id              = module.vpc.public_subnets[0]
+  subnet_id              = module.vpc.public_subnets[var.server_subnet_index]
   vpc_security_group_ids = [aws_security_group.k3s_server.id]
   iam_instance_profile   = aws_iam_instance_profile.k3s_server.name
   key_name               = var.key_name
@@ -144,6 +147,14 @@ resource "aws_instance" "k3s_server" {
     volume_size           = 50
     volume_type           = "gp3"
     delete_on_termination = true
+
+    # Picked up by the daily snapshot policy (aws_dlm_lifecycle_policy.daily).
+    tags = {
+      Name        = "sockshop-${var.env}-k3s-server"
+      Backup      = "sockshop-${var.env}"
+      Project     = "sock-shop"
+      Environment = var.env
+    }
   }
 
   user_data = base64encode(templatefile("${path.module}/user-data.sh", {
@@ -156,8 +167,10 @@ resource "aws_instance" "k3s_server" {
     Environment = var.env
   }
 
+  # subnet_id is ignored so that after `make restore AZ=b` the next CD apply
+  # (which uses the default subnet) does not move the server back.
   lifecycle {
-    ignore_changes = [ami, user_data]
+    ignore_changes = [ami, user_data, subnet_id]
   }
 }
 
@@ -401,6 +414,48 @@ resource "aws_cloudwatch_metric_alarm" "idle_stop" {
   }
 
   tags = {
+    Project     = "sock-shop"
+    Environment = var.env
+  }
+}
+
+# Daily snapshot of the k3s server's disk at 03:00 UTC, 7 kept (~$2/month).
+# Runs whether the instance is running or idle-stopped. Restore with
+# `make restore AZ=a|b|c` (staging/restore.sh). The DLM role is created by the
+# admin-applied github-oidc stack.
+resource "aws_dlm_lifecycle_policy" "daily" {
+  description        = "sockshop-${var.env} daily disk snapshots - 7 kept"
+  execution_role_arn = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/sockshop-${var.env}-dlm"
+  state              = "ENABLED"
+
+  policy_details {
+    resource_types = ["VOLUME"]
+    target_tags = {
+      Backup = "sockshop-${var.env}"
+    }
+
+    schedule {
+      name      = "daily-7-kept"
+      copy_tags = true
+
+      create_rule {
+        interval      = 24
+        interval_unit = "HOURS"
+        times         = ["03:00"]
+      }
+
+      retain_rule {
+        count = 7
+      }
+
+      tags_to_add = {
+        SnapshotCreator = "dlm"
+      }
+    }
+  }
+
+  tags = {
+    Name        = "sockshop-${var.env}-daily-snapshots"
     Project     = "sock-shop"
     Environment = var.env
   }

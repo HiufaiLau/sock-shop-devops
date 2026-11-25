@@ -10,6 +10,9 @@ deployed by Terraform and GitHub Actions. Full details: [staging/README.md](stag
 - **EC2**: one t3.medium (4 GiB RAM), Ubuntu 22.04 + K3s, with an Elastic IP
   - Runs the shop (`sock-shop` namespace) and Prometheus/Grafana (`monitoring` namespace)
   - A CloudWatch alarm stops the instance after 30 min idle (CPU < 15%); CD starts it again
+- **Backups**: daily snapshot of the server disk at 03:00 UTC, 7 kept (~$2/month).
+  `make restore AZ=b` rebuilds the server from the latest one in another AZ; see
+  [staging/README.md](staging/README.md#backup-and-restore)
 - **Network**: custom VPC, 3 public subnets across AZs, Internet Gateway
 - **ALB**: HTTPS via ACM, HTTP redirects to HTTPS, forwards to NodePort 30080
 - **Route 53**: `sockshop-staging.link` alias to the ALB, DNS-validated certificate

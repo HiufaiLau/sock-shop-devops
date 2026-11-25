@@ -193,6 +193,31 @@ data "aws_iam_policy_document" "github_deploy" {
     }
   }
 
+  # Daily EBS snapshots (aws_dlm_lifecycle_policy in staging/main.tf).
+  statement {
+    sid       = "SnapshotPolicy"
+    actions   = ["dlm:*"]
+    resources = ["*"]
+    condition {
+      test     = "StringEquals"
+      variable = "aws:RequestedRegion"
+      values   = [var.aws_region]
+    }
+  }
+
+  # The lifecycle policy runs as the DLM role below; CD may only hand that
+  # one role to DLM.
+  statement {
+    sid       = "SnapshotRolePassToDlm"
+    actions   = ["iam:PassRole"]
+    resources = [aws_iam_role.dlm.arn]
+    condition {
+      test     = "StringEquals"
+      variable = "iam:PassedToService"
+      values   = ["dlm.amazonaws.com"]
+    }
+  }
+
   # The ALB needs its service-linked role the first time one is created.
   statement {
     sid       = "ElbServiceLinkedRole"
@@ -210,4 +235,31 @@ resource "aws_iam_role_policy" "github_deploy" {
   name   = "${local.name}-github-deploy"
   role   = aws_iam_role.github_deploy.id
   policy = data.aws_iam_policy_document.github_deploy.json
+}
+
+# --- Snapshot service role ------------------------------------------------------
+# Data Lifecycle Manager assumes this role to create and delete the daily
+# snapshots of the k3s server's disk. It lives here (admin-applied) because the
+# deploy role may only create the k3s node's own role.
+resource "aws_iam_role" "dlm" {
+  name = "${local.name}-dlm"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Action    = "sts:AssumeRole"
+      Principal = { Service = "dlm.amazonaws.com" }
+    }]
+  })
+
+  tags = {
+    Project     = "sock-shop"
+    Environment = var.env
+  }
+}
+
+resource "aws_iam_role_policy_attachment" "dlm" {
+  role       = aws_iam_role.dlm.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSDataLifecycleManagerServiceRole"
 }

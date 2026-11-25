@@ -45,3 +45,20 @@ variable "k3s_version" {
   type        = string
   default     = "v1.27.3+k3s1"
 }
+
+variable "server_subnet_index" {
+  description = "Which public subnet (0 = eu-central-1a, 1 = b, 2 = c) the k3s server runs in. Set by restore.sh; changing it alone does not move a running server."
+  type        = number
+  default     = 0
+
+  validation {
+    condition     = contains([0, 1, 2], var.server_subnet_index)
+    error_message = "server_subnet_index must be 0, 1 or 2."
+  }
+}
+
+variable "restore_ami_id" {
+  description = "Image to build the k3s server from when restoring a snapshot (set by restore.sh). Empty = fresh Ubuntu."
+  type        = string
+  default     = ""
+}

@@ -52,6 +52,8 @@ The role's inline policy covers what CD does:
 - **Staging resources** (EC2/VPC, ELB, ACM, CloudWatch), limited to `eu-central-1`.
 - **Route 53:** manage records (Route 53 is global, so it has no region limit).
 - **SSM:** send the deploy command and read its output.
+- **Snapshots (DLM):** manage the daily snapshot policy, and pass only the
+  `sockshop-staging-dlm` role (created by this stack) to DLM.
 - **IAM:** only the k3s node's `sockshop-staging-k3s-server-*` role and
   instance profile. The only policy it can attach to them is
   `AmazonSSMManagedInstanceCore`, so the deploy role cannot grant anyone admin.

@@ -5,7 +5,7 @@ REGION      := eu-central-1
 INSTANCE_ID  = $(shell AWS_REGION=$(REGION) staging/find-instance.sh)
 APP_URL     := https://sockshop-staging.link
 
-.PHONY: up down status url
+.PHONY: up down status url snapshots restore
 
 ## Start the app (instance boots in ~2 minutes)
 up:
@@ -26,6 +26,18 @@ down:
 status:
 	@aws ec2 describe-instances --region $(REGION) --instance-ids $(INSTANCE_ID) \
 		--query 'Reservations[0].Instances[0].State.Name' --output text
+
+## List the daily snapshots of the server disk (newest last)
+snapshots:
+	@aws ec2 describe-snapshots --region $(REGION) --owner-ids self \
+		--filters "Name=tag:Backup,Values=sockshop-staging" \
+		--query 'sort_by(Snapshots,&StartTime)[].[SnapshotId,StartTime,State,VolumeSize]' --output table
+
+## Rebuild the server from the latest snapshot in another AZ: make restore AZ=b
+## (SNAPSHOT=snap-... for a specific one, SNAPSHOT=none for a fresh server)
+restore:
+	@test -n "$(AZ)" || { echo "usage: make restore AZ=a|b|c [SNAPSHOT=latest|snap-...|none]"; exit 1; }
+	AWS_REGION=$(REGION) staging/restore.sh $(AZ) $(or $(SNAPSHOT),latest)
 
 ## Print the app URL
 url:

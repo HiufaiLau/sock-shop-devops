@@ -119,6 +119,7 @@ HTTP redirects to HTTPS.
 | Application Load Balancer | HTTPS (ACM) + HTTP→HTTPS redirect, routes to NodePort 30080 |
 | Route 53 + ACM | `sockshop-staging.link` alias and DNS-validated certificate |
 | CloudWatch alarm | Stops the instance after 30 min idle (CPU < 15%) |
+| DLM snapshot policy | Snapshots the server disk daily at 03:00 UTC, keeps 7 (~$2/month) |
 
 ## Outputs
 
@@ -188,6 +189,34 @@ aws elbv2 describe-target-health \
   --target-group-arn $(aws elbv2 describe-target-groups \
     --names sockshop-staging-app --query 'TargetGroups[0].TargetGroupArn' --output text)
 ```
+
+## Backup and Restore
+
+The server's disk (tag `Backup=sockshop-staging`) is snapshotted every day at
+03:00 UTC by a Data Lifecycle Manager policy, and the 7 newest snapshots are
+kept. It runs whether the instance is running or idle-stopped. The DLM role
+`sockshop-staging-dlm` is created by the admin-applied
+[github-oidc](github-oidc/README.md) stack.
+
+From the repo root:
+
+```bash
+make snapshots                 # list snapshots, newest last
+make restore AZ=b              # rebuild from the latest snapshot in eu-central-1b
+make restore AZ=a SNAPSHOT=snap-0123456789abcdef0   # a specific snapshot
+make restore AZ=c SNAPSHOT=none                     # fresh server, then run CD
+```
+
+[restore.sh](restore.sh) registers a temporary image from the snapshot, runs
+`terraform apply -replace` on the server in the chosen AZ (Terraform shows the
+plan and asks for `yes`), then removes the old server's K3s node so pods move
+straight away. The Elastic IP, ALB target and idle alarm follow the new
+instance. Expect about 15–20 minutes end to end.
+
+The server's AZ is ignored by later applies, so CD does not move a restored
+server back to `eu-central-1a`. App databases keep their data inside their
+containers (no persistent volumes), so a restore brings back the server and
+cluster as they were at snapshot time, not a copy of live shop data.
 
 ## Cleanup
 
