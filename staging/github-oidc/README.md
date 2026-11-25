@@ -37,7 +37,11 @@ Then run **CD (Deploy)** manually once to confirm it works. After that:
 
 1. Delete the `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` and `AWS_REGION`
    secrets from GitHub.
-2. Deactivate, then delete, the access keys of the IAM user that CD used before.
+2. Deactivate, then delete, the access key CD used before. In this account that
+   was a **root** access key: sign in as root, then account menu → **Security
+   credentials → Access keys**. Root should have no access keys; local admin
+   access goes through IAM Identity Center (see
+   [AWS_CREDENTIALS_SETUP.md](../../AWS_CREDENTIALS_SETUP.md)).
 
 ## Permissions
 

@@ -1,150 +1,112 @@
-# AWS Credentials Setup Guide
+# AWS Credentials Setup
 
-You need to configure AWS credentials before Terraform can create resources. Here are your options:
+Staging runs in AWS account `414772274298`, region `eu-central-1` (Frankfurt).
+There are two kinds of AWS access, and they use different credentials:
 
-## Option 1: Using AWS CLI Configure (Recommended - Easiest)
+| Who | How they get AWS access | Stored keys? |
+|-----|-------------------------|--------------|
+| **CD (GitHub Actions)** | GitHub OIDC: assumes the `sockshop-staging-github-deploy` role | No |
+| **You, from a laptop** | AWS CLI profile (IAM Identity Center or an IAM user) | Only on your machine |
 
-Run this command in your terminal and follow the prompts:
+## GitHub Actions (CD)
+
+CD does **not** use access keys. Each run gets temporary credentials (valid for up
+to 1 hour) through GitHub OIDC. The role, its trust policy and its permissions are
+defined in [staging/github-oidc/](staging/github-oidc/README.md).
+
+What GitHub needs:
+
+- An environment called `staging` (**Settings → Environments**).
+- In that environment, the **variable** (not secret) `AWS_DEPLOY_ROLE_ARN`, set to
+  the output of:
+
+  ```bash
+  cd staging/github-oidc
+  terraform output -raw deploy_role_arn
+  ```
+
+Do **not** add `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` or `AWS_REGION` secrets.
+If they still exist from the old setup, delete them.
+
+If CD fails with `AccessDenied`, the deploy role is missing a permission. Add it in
+[staging/github-oidc/main.tf](staging/github-oidc/main.tf) and re-apply that stack
+by hand (see below). CD can't change its own permissions.
+
+## Local access
+
+You need local credentials for:
+
+- running Terraform by hand (for example `terraform plan` in `staging/`),
+- applying `staging/github-oidc/` (needs IAM admin rights; CD never applies it),
+- opening an SSM session or port-forwarding to Grafana/Prometheus.
+
+### Recommended: IAM Identity Center (SSO)
+
+Short-lived credentials, no keys on disk:
 
 ```bash
-aws configure
+aws configure sso --profile sockshop
+# SSO region: the region your Identity Center lives in
+# Default region: eu-central-1
+
+aws sso login --profile sockshop
+export AWS_PROFILE=sockshop
 ```
 
-You'll be asked for:
-1. **AWS Access Key ID**: Get this from AWS IAM Console
-2. **AWS Secret Access Key**: Get this from AWS IAM Console
-3. **Default region name**: Enter `eu-central-1` (Frankfurt)
-4. **Default output format**: Press Enter (or type `json`)
+### Alternative: IAM user with access keys
 
-### How to Get AWS Access Keys:
-
-1. Log into AWS Console: https://console.aws.amazon.com/
-2. Go to **IAM** → **Users** → Click your username
-3. Click **Security credentials** tab
-4. Click **Create access key**
-5. Select **Command Line Interface (CLI)**
-6. Click **Next** → **Create access key**
-7. **Copy both keys** (you won't see the secret key again!)
-
-## Option 2: Using Environment Variables (Temporary - For Current Session)
-
-Run these commands in your terminal (replace with your actual keys):
+If Identity Center isn't set up, use an IAM user (**never the root user**) and
+store its keys in a named profile:
 
 ```bash
-export AWS_ACCESS_KEY_ID="your-access-key-here"
-export AWS_SECRET_ACCESS_KEY="your-secret-key-here"
-export AWS_REGION="eu-central-1"
+aws configure --profile sockshop
+# AWS Access Key ID / Secret Access Key: from IAM → Users → <user> → Security credentials
+# Default region name: eu-central-1
+# Default output format: json
+
+export AWS_PROFILE=sockshop
 ```
 
-**Note**: These will only last until you close your terminal window.
+Keep keys out of shell rc files and out of Git. Enable MFA on the user and rotate
+the keys regularly.
 
-To make them permanent, add them to your `~/.zshrc` file:
-
-```bash
-echo 'export AWS_ACCESS_KEY_ID="your-access-key-here"' >> ~/.zshrc
-echo 'export AWS_SECRET_ACCESS_KEY="your-secret-key-here"' >> ~/.zshrc
-echo 'export AWS_REGION="eu-central-1"' >> ~/.zshrc
-source ~/.zshrc
-```
-
-## Option 3: Using AWS Credentials File (Manual)
-
-Create or edit the file: `~/.aws/credentials`
+### Verify
 
 ```bash
-mkdir -p ~/.aws
-cat > ~/.aws/credentials <<EOF
-[default]
-aws_access_key_id = your-access-key-here
-aws_secret_access_key = your-secret-key-here
-EOF
-
-cat > ~/.aws/config <<EOF
-[default]
-region = eu-central-1
-output = json
-EOF
-```
-
-## Verify Your Configuration
-
-After configuring, test it:
-
-```bash
-# Check if credentials are configured
 aws sts get-caller-identity
-
-# You should see something like:
-# {
-#     "UserId": "AIDAXXXXXXXXXXXXXXXXX",
-#     "Account": "123456789012",
-#     "Arn": "arn:aws:iam::123456789012:user/your-username"
-# }
 ```
 
-## For GitHub Actions (CD Workflow)
+`Account` must be `414772274298`. If it shows another account, you're using the
+wrong profile; set `AWS_PROFILE=sockshop`.
 
-The CD workflow needs these secrets in your GitHub repository:
+## Permissions
 
-1. Go to your GitHub repo
-2. Click **Settings** → **Secrets and variables** → **Actions**
-3. Click **New repository secret** and add:
+| Task | Needs |
+|------|-------|
+| `terraform plan/apply` in `staging/` | Same as the CD deploy role: EC2/VPC, ELB, ACM, CloudWatch, Route 53, SSM, the k3s node role, plus the state bucket and lock table |
+| `terraform apply` in `staging/github-oidc/` | IAM admin (creates the OIDC provider and the deploy role) |
+| SSM session / port forwarding | `ssm:StartSession` on the instance, plus the Session Manager plugin |
 
-   - **Name**: `AWS_ACCESS_KEY_ID`
-     **Value**: Your AWS access key
-
-   - **Name**: `AWS_SECRET_ACCESS_KEY`
-     **Value**: Your AWS secret access key
-
-   - **Name**: `AWS_REGION`
-     **Value**: `eu-central-1`
-
-## Security Best Practices
-
-⚠️ **IMPORTANT**:
-- Never commit credentials to Git
-- Use IAM users with minimal required permissions
-- Enable MFA (Multi-Factor Authentication) on your AWS account
-- Rotate access keys regularly
-- Consider using AWS SSO for production setups
-
-## IAM Permissions Required
-
-Your IAM user/role needs these permissions:
-- EC2 (create instances, security groups)
-- VPC (create VPCs, subnets, internet gateways)
-- ELB (create load balancers, target groups)
-- IAM (create roles, instance profiles)
-- SSM (Systems Manager access)
-
-You can use the **AdministratorAccess** policy for testing, but create a custom policy for production.
+The full list of what CD is allowed to do is in
+[staging/github-oidc/README.md](staging/github-oidc/README.md#permissions).
 
 ## Troubleshooting
 
-### "No valid credential sources found"
-- Run `aws configure` to set up credentials
-- Or set environment variables as shown above
+### "Unable to locate credentials" / "No valid credential sources found"
+Set `AWS_PROFILE=sockshop`, and run `aws sso login --profile sockshop` if you use SSO.
 
-### "Access Denied" errors
-- Check your IAM user has sufficient permissions
-- Verify the credentials are correct
+### "ExpiredToken"
+Your SSO session expired. Run `aws sso login --profile sockshop`.
 
-### "Region not supported"
-- Make sure you set region to `eu-central-1` (Frankfurt)
+### `AccessDenied` locally
+Check `aws sts get-caller-identity`: wrong account or wrong user is the usual cause.
 
-## Next Steps
+### `AccessDenied` in CD
+See [GitHub Actions (CD)](#github-actions-cd) above.
 
-After configuring credentials:
-
-```bash
-cd sock-shop-devops/staging
-
-# Validate configuration
-terraform validate
-
-# See what will be created
-terraform plan
-
-# Create the infrastructure (when ready)
-terraform apply
-```
+### CD fails at "Configure AWS credentials" with "Not authorized to perform sts:AssumeRoleWithWebIdentity"
+- `AWS_DEPLOY_ROLE_ARN` is missing or wrong in the `staging` environment.
+- The job isn't running with `environment: staging`, so the token's `sub` claim
+  doesn't match the trust policy.
+- The repo was renamed or moved; update `github_repo` in
+  [staging/github-oidc/variables.tf](staging/github-oidc/variables.tf) and re-apply.
