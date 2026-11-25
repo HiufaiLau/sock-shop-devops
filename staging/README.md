@@ -15,10 +15,9 @@ This directory contains Terraform configuration to deploy a K3s (lightweight Kub
 1. **AWS Account** with appropriate permissions
 2. **AWS CLI** configured with credentials
 3. **Terraform** >= 1.5.0
-4. **GitHub Secrets** configured (for CI/CD):
-   - `AWS_ACCESS_KEY_ID`
-   - `AWS_SECRET_ACCESS_KEY`
-   - `AWS_REGION`
+4. **GitHub OIDC deploy role** (for CI/CD): apply [github-oidc/](github-oidc/README.md) once
+   and set the `AWS_DEPLOY_ROLE_ARN` variable on the GitHub `staging` environment.
+   No AWS keys are stored in GitHub.
 
 ## Configuration
 

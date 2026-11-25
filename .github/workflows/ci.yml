@@ -175,5 +175,7 @@ jobs:
       - complete-demo-sync-check
       - kubeconform
       - kind-deploy-smoke
+    permissions:
+      contents: read
+      id-token: write # cd.yml needs it for AWS OIDC
     uses: ./.github/workflows/cd.yml
-    secrets: inherit

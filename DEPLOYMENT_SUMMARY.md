@@ -35,7 +35,9 @@ if it was idle-stopped, and deploys the shop and monitoring manifests over SSM
 
 Manual redeploy: Actions → **CD (Deploy)** → Run workflow (branch `staging`).
 
-GitHub secrets required: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION` (eu-central-1).
+AWS access: GitHub OIDC, no stored keys. CD assumes the role from
+[staging/github-oidc](staging/github-oidc/README.md); the GitHub `staging` environment
+needs the variable `AWS_DEPLOY_ROLE_ARN`.
 
 ## Accessing the Cluster
 
