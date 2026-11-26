@@ -33,5 +33,15 @@ spec:
               - SETGID
               - SETUID
           readOnlyRootFilesystem: true
+        # Redis writes RDB snapshots to /data. With a read-only root fs and no
+        # volume there, the first save fails and Redis then rejects all writes
+        # (MISCONF), which breaks front-end sessions. Sessions don't need to
+        # survive a pod restart, so an emptyDir is enough.
+        volumeMounts:
+        - mountPath: /data
+          name: data
+      volumes:
+        - name: data
+          emptyDir: {}
       nodeSelector:
         beta.kubernetes.io/os: linux

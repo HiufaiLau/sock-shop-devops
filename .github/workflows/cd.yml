@@ -1,184 +1,130 @@
 name: CD (Deploy)
 
+# Flow: push to staging -> CI (sync check + kubeconform + kind smoke test)
+# -> only if all green -> CI calls this workflow -> Terraform + SSM deploy.
+# Deploy logic lives only here; ci.yml just calls it. workflow_dispatch allows
+# a manual redeploy from the Actions tab.
 on:
-  push:
-    branches:
-      - staging
-      - master
+  workflow_call: {}
+  workflow_dispatch: {}
 
 concurrency:
-  group: cd-${{ github.ref_name }}
+  group: cd-staging
   cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write # request the GitHub OIDC token exchanged for AWS credentials
+
+env:
+  # Same bucket as the Terraform backend (staging/backend.tf).
+  BUNDLE_BUCKET: sockshop-terraform-state-414772274298
+  APP_URL: https://sockshop-staging.link
 
 jobs:
   deploy-staging:
-    if: github.ref_name == 'staging'
+    if: github.ref == 'refs/heads/staging'
     runs-on: ubuntu-latest
     environment: staging
+    timeout-minutes: 40
+    env:
+      DEPLOY_SHA: ${{ github.sha }}
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout the commit CI tested
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.DEPLOY_SHA }}
 
+      # OIDC: no stored keys. The role only trusts this repo's `staging`
+      # environment; see staging/github-oidc/.
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ secrets.AWS_REGION }}
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          role-session-name: cd-staging-${{ github.run_id }}
+          aws-region: eu-central-1
 
-      - name: Install tools (terraform, kubectl, helm)
-        shell: bash
-        run: |
-          set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y unzip ca-certificates curl
-
-          TF_VER="1.6.6"
-          curl -fsSL -o terraform.zip "https://releases.hashicorp.com/terraform/${TF_VER}/terraform_${TF_VER}_linux_amd64.zip"
-          unzip -q terraform.zip
-          sudo install -m 0755 terraform /usr/local/bin/terraform
-
-          KUBECTL_VER="v1.27.3"
-          curl -fsSL -o kubectl "https://dl.k8s.io/release/${KUBECTL_VER}/bin/linux/amd64/kubectl"
-          chmod +x kubectl && sudo mv kubectl /usr/local/bin/kubectl
-
-          HELM_VER="v3.13.3"
-          curl -fsSL -o helm.tar.gz "https://get.helm.sh/helm-${HELM_VER}-linux-amd64.tar.gz"
-          tar -xzf helm.tar.gz
-          sudo mv linux-amd64/helm /usr/local/bin/helm
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.6.6
+          terraform_wrapper: false
 
       - name: Terraform apply (staging)
+        working-directory: staging
         shell: bash
         run: |
           set -euo pipefail
-          cd infra/envs/staging
-          terraform init
-          terraform apply -auto-approve
+          terraform init -input=false
+          terraform apply -input=false -auto-approve
+          echo "INSTANCE_ID=$(terraform output -raw server_instance_id)" >> "$GITHUB_ENV"
 
-      - name: Set kubeconfig (staging)
+      - name: Start instance if the idle alarm stopped it
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p ~/.kube
-          echo "${{ secrets.KUBECONFIG_B64 }}" | base64 -d > ~/.kube/config
-          chmod 600 ~/.kube/config
-          kubectl get nodes -o wide
+          STATE=$(aws ec2 describe-instances --instance-ids "$INSTANCE_ID" \
+            --query 'Reservations[0].Instances[0].State.Name' --output text)
+          echo "Instance $INSTANCE_ID is $STATE"
+          if [ "$STATE" = "stopping" ]; then
+            aws ec2 wait instance-stopped --instance-ids "$INSTANCE_ID"
+            STATE=stopped
+          fi
+          if [ "$STATE" = "stopped" ]; then
+            aws ec2 start-instances --instance-ids "$INSTANCE_ID" >/dev/null
+          fi
+          aws ec2 wait instance-running --instance-ids "$INSTANCE_ID"
 
-      - name: Install nginx ingress (staging)
+      - name: Wait for SSM agent
         shell: bash
         run: |
           set -euo pipefail
-          helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
-          helm repo update
-          helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
-            -n ingress-nginx --create-namespace \
-            --set controller.service.type=NodePort \
-            --set controller.service.nodePorts.http=30080 \
-            --set controller.service.nodePorts.https=30443
+          timeout 600 bash -c 'until aws ssm describe-instance-information \
+              --filters "Key=InstanceIds,Values=$INSTANCE_ID" \
+              --query "InstanceInformationList[0].PingStatus" --output text | grep -q Online; do
+            echo "Waiting for SSM..."; sleep 10; done'
+          echo "SSM agent is online"
 
-      - name: Deploy app (staging)
+      - name: Upload manifest bundle
         shell: bash
         run: |
           set -euo pipefail
-          kubectl apply -f deploy/kubernetes/complete-demo.yaml
-          kubectl apply -f platform/k8s/ingress/sockshop-ingress.yaml
+          KEY="deploy-bundles/staging/${DEPLOY_SHA}.tgz"
+          tar -czf /tmp/bundle.tgz deploy/kubernetes/complete-demo.yaml deploy/kubernetes/manifests-monitoring
+          aws s3 cp /tmp/bundle.tgz "s3://${BUNDLE_BUCKET}/${KEY}"
+          URL=$(aws s3 presign "s3://${BUNDLE_BUCKET}/${KEY}" --expires-in 1800)
+          echo "::add-mask::${URL}"
+          echo "BUNDLE_URL=${URL}" >> "$GITHUB_ENV"
 
-      - name: Wait + smoke test (staging)
+      - name: Deploy shop + monitoring via SSM (kubectl runs on the node)
         shell: bash
         run: |
           set -euo pipefail
-          for d in $(kubectl -n sock-shop get deploy -o name); do
-            kubectl -n sock-shop rollout status "$d" --timeout=10m
+          # Use a non-sed-special delimiter: presigned URLs contain & and /.
+          python3 - <<'PY'
+          import os
+          s = open("staging/remote-deploy.sh").read()
+          open("/tmp/remote-deploy.sh", "w").write(s.replace("__BUNDLE_URL__", os.environ["BUNDLE_URL"]))
+          PY
+          bash staging/ssm-run.sh "$INSTANCE_ID" /tmp/remote-deploy.sh 1500
+
+      - name: End-to-end check through Route 53 + ALB
+        shell: bash
+        run: |
+          set -euo pipefail
+          # ALB health check needs 2 x 30s healthy probes after a (re)start.
+          for i in $(seq 1 30); do
+            if curl -fsS -o /dev/null -w "HTTP %{http_code}\n" "$APP_URL/"; then
+              echo "Sock Shop is live at $APP_URL"
+              exit 0
+            fi
+            echo "Not reachable yet ($i/30)..."; sleep 10
           done
+          echo "Sock Shop not reachable at $APP_URL"
+          exit 1
 
-          kubectl -n sock-shop port-forward svc/front-end 18080:80 >/tmp/pf.log 2>&1 &
-          PF_PID=$!
-          sleep 3
-          curl -fsS http://127.0.0.1:18080/ | head -n 10
-          kill $PF_PID
-
-  deploy-production:
-    if: github.ref_name == 'master'
-    runs-on: ubuntu-latest
-    environment: production
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ secrets.AWS_REGION }}
-
-      - name: Install tools (terraform, kubectl, helm)
+      - name: Clean up bundle
+        if: always()
         shell: bash
-        run: |
-          set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y unzip ca-certificates curl
-
-          TF_VER="1.6.6"
-          curl -fsSL -o terraform.zip "https://releases.hashicorp.com/terraform/${TF_VER}/terraform_${TF_VER}_linux_amd64.zip"
-          unzip -q terraform.zip
-          sudo install -m 0755 terraform /usr/local/bin/terraform
-
-          KUBECTL_VER="v1.27.3"
-          curl -fsSL -o kubectl "https://dl.k8s.io/release/${KUBECTL_VER}/bin/linux/amd64/kubectl"
-          chmod +x kubectl && sudo mv kubectl /usr/local/bin/kubectl
-
-          HELM_VER="v3.13.3"
-          curl -fsSL -o helm.tar.gz "https://get.helm.sh/helm-${HELM_VER}-linux-amd64.tar.gz"
-          tar -xzf helm.tar.gz
-          sudo mv linux-amd64/helm /usr/local/bin/helm
-
-      - name: Terraform apply (production)
-        shell: bash
-        run: |
-          set -euo pipefail
-          cd infra/envs/production
-          terraform init
-          terraform apply -auto-approve
-
-      - name: Set kubeconfig (production)
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p ~/.kube
-          echo "${{ secrets.KUBECONFIG_B64 }}" | base64 -d > ~/.kube/config
-          chmod 600 ~/.kube/config
-          kubectl get nodes -o wide
-
-      - name: Install nginx ingress (production)
-        shell: bash
-        run: |
-          set -euo pipefail
-          helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
-          helm repo update
-          helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
-            -n ingress-nginx --create-namespace \
-            --set controller.service.type=NodePort \
-            --set controller.service.nodePorts.http=30080 \
-            --set controller.service.nodePorts.https=30443
-
-      - name: Deploy app (production)
-        shell: bash
-        run: |
-          set -euo pipefail
-          kubectl apply -f deploy/kubernetes/complete-demo.yaml
-          kubectl apply -f platform/k8s/ingress/sockshop-ingress.yaml
-
-      - name: Wait + smoke test (production)
-        shell: bash
-        run: |
-          set -euo pipefail
-          for d in $(kubectl -n sock-shop get deploy -o name); do
-            kubectl -n sock-shop rollout status "$d" --timeout=10m
-          done
-
-          kubectl -n sock-shop port-forward svc/front-end 18080:80 >/tmp/pf.log 2>&1 &
-          PF_PID=$!
-          sleep 3
-          curl -fsS http://127.0.0.1:18080/ | head -n 10
-          kill $PF_PID
+        run: aws s3 rm "s3://${BUNDLE_BUCKET}/deploy-bundles/staging/${DEPLOY_SHA}.tgz" || true

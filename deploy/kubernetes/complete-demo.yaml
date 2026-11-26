@@ -91,7 +91,7 @@ spec:
     spec:
       containers:
       - name: carts-db
-        image: mongo
+        image: mongo:4.4.0
         ports:
         - name: mongo
           containerPort: 27017
@@ -314,7 +314,7 @@ spec:
   ports:
   - port: 80
     targetPort: 8079
-    nodePort: 30001
+    nodePort: 30080
   selector:
     name: front-end
 ---
@@ -405,7 +405,7 @@ spec:
     spec:
       containers:
       - name: orders-db
-        image: mongo
+        image: mongo:4.4.0
         ports:
         - name: mongo
           containerPort: 27017
@@ -667,6 +667,16 @@ spec:
               - SETGID
               - SETUID
           readOnlyRootFilesystem: true
+        # Redis writes RDB snapshots to /data. With a read-only root fs and no
+        # volume there, the first save fails and Redis then rejects all writes
+        # (MISCONF), which breaks front-end sessions. Sessions don't need to
+        # survive a pod restart, so an emptyDir is enough.
+        volumeMounts:
+        - mountPath: /data
+          name: data
+      volumes:
+        - name: data
+          emptyDir: {}
       nodeSelector:
         beta.kubernetes.io/os: linux
 ---
