@@ -137,6 +137,15 @@ Common problems:
 
 CD deploys exactly the commit CI tested, and a concurrency group stops two deploys running at once.
 
+**Production (planned, not built yet)** will be deployed by hand after approval, never automatically:
+
+1. A change is tested and deployed to staging as above.
+2. A pull request from `staging` to `master` is reviewed and approved.
+3. An approved engineer starts the production deploy by hand: **Run workflow** in GitHub Actions, using the protected `production` environment.
+4. The same image that ran on staging is deployed, followed by a smoke test, with an automatic rollback if the test fails.
+
+A merge to `master` never deploys on its own. See the production plan in [PROJECT_PROGRESS.md](PROJECT_PROGRESS.md#8-next-steps-and-production-plan).
+
 ## Backup and restore
 
 A Data Lifecycle Manager policy snapshots the server's 50 GB disk every day at 03:00 UTC and keeps 7 (about $2/month). It runs whether the instance is running or stopped.

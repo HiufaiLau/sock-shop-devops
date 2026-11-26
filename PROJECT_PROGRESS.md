@@ -107,7 +107,7 @@ CI blocks broken manifests before anything reaches AWS; only a fully green CI ru
 6. End-to-end check: curl https://sockshop-staging.link through Route 53 and the ALB until it answers.
 7. Delete the bundle from S3.
 
-CD uses the `staging` GitHub Environment, and a concurrency group stops two deploys running at once. There is no production job yet.
+CD uses the `staging` GitHub Environment, and a concurrency group stops two deploys running at once. There is no production job yet. When there is one, it will be manual: after the `staging` → `master` pull request is approved, an approved engineer starts the production deploy by hand. A merge never deploys on its own (see section 8).
 
 ## 5. AWS and cost
 
@@ -197,8 +197,7 @@ The hardest problem was how K3s used the Elastic IP: about four certificate fixe
 
 ## 8. Next steps and production plan
 
-The top priority is now production; GitHub OIDC and backups from the Nov 23 list are done. Cheap staging hardening comes first because it de-risks production. The full cost breakdown is in [STATUS_AND_PRODUCTION_PLAN.md](STATUS_AND_PRODUCTION_PLAN.md).
-
+The top priority is now production; GitHub OIDC and backups from the Nov 23 list are done. Cheap staging hardening comes first because it de-risks production.
 ### Staging hardening (≈ $0–5/month extra)
 
 | Priority | Area | Improvement | Why |
@@ -216,7 +215,7 @@ The top priority is now production; GitHub OIDC and backups from the Nov 23 list
 
 Decisions needed first: target availability (e.g. 99.9%), expected traffic, whether shop data must persist, monthly budget, and the production domain.
 
-1. **Foundation (2–3 days):** separate prod AWS account, own state bucket and OIDC role, `production` GitHub Environment with manual approval; CloudTrail, GuardDuty, Budgets.
+1. **Foundation (2–3 days):** separate prod AWS account, own state bucket and OIDC role, `production` GitHub Environment that only approved people can deploy to, by hand; CloudTrail, GuardDuty, Budgets.
 2. **Terraform refactor (2–3 days):** move `staging/` into reusable modules with `envs/staging` and `envs/prod`.
 3. **Network (1–2 days):** VPC across 3 AZs; ALB and NAT public, nodes private; S3 gateway endpoint.
 4. **Cluster (3–4 days):** EKS with 3 × t3.large (one per AZ), EBS CSI, AWS Load Balancer Controller, autoscaling.
@@ -224,7 +223,7 @@ Decisions needed first: target availability (e.g. 99.9%), expected traffic, whet
 6. **App hardening (3–4 days):** Helm chart with prod values, ≥2 replicas, PDBs, limits, HPA, NetworkPolicies, pinned images from ECR.
 7. **Security (2 days):** WAF on the ALB, Secrets Manager via External Secrets, Pod Identity, no public node IPs.
 8. **Observability (2–3 days):** kube-prometheus-stack with Alertmanager, ALB 5xx alarms, Fluent Bit to CloudWatch Logs.
-9. **CI/CD promotion (2 days):** `staging` → PR to `master` → approved prod deploy with `helm upgrade --atomic`, smoke test and rollback; the same image digest is promoted.
+9. **CI/CD promotion (2 days):** `staging` → PR to `master` → reviewer approves → an approved engineer starts the prod deploy **by hand** (Run workflow). A merge never deploys on its own. `helm upgrade --atomic`, smoke test and automatic rollback; the same image digest is promoted.
 10. **Go-live (2–3 days):** load test at 2× peak, restore drill, runbooks, DNS cut-over.
 
 | Option | Setup | USD/month on-demand | With 1-yr Savings Plan | Availability |
