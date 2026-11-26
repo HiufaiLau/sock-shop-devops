@@ -11,7 +11,8 @@ _As of 26 Nov 2026 · @Hiu_
 - **GitHub OIDC is live.** CD now assumes a short-lived IAM role; no AWS access keys are stored in GitHub. This closes the top security item from the last report.
 - **Daily disk backups and one-command restore.** An EBS snapshot runs at 03:00 UTC and 7 are kept (~$2/month). `make restore AZ=b` rebuilds the server from a snapshot in any availability zone in about 15–20 minutes.
 - **Idle auto-stop actually works now.** The node idles at 12–13% CPU, so the old 5% threshold never fired and staging ran 24/7. The threshold is now 15%.
-- **Login and cart fixed.** Redis (session-db) could not write its snapshots, then refused all writes. It now has a writable `/data` volume.
+- **Login fixed.** Redis (session-db) could not write its snapshots, then refused all writes. It now has a writable `/data` volume.
+- **Add to cart fixed (Nov 26).** The cart and orders databases used the untagged `mongo` image, which now pulls MongoDB 8.x. The 2017 carts service's driver can't talk to it (`Unsupported OP_QUERY command`), so every add to cart returned HTTP 500. Both databases are now pinned to `mongo:4.4.0`, matching the Helm chart.
 - **Grafana dashboards are provisioned from code**, and stale docs and scripts were cleaned up (Nov 23).
 
 **Still open:** production environment and promotion, `terraform plan` review before apply, alerting (Alertmanager), persistent database storage, secrets (Grafana is still admin/admin) and the K3s 1.27 upgrade. All work is on the `staging` branch; nothing is merged to `master` yet.
@@ -147,7 +148,7 @@ For a staging demo I put low cost and simplicity first, accepting risks only whe
 | Deploy bundle leaked | Private state bucket; 30-minute presigned URL, masked in logs, file deleted after the run | None major |
 | Terraform state leaked or corrupted | S3 encrypted, versioned, public access blocked; DynamoDB lock; state out of Git | None major |
 | Server role too powerful | EC2 role has only the AWS-managed SSM policy | None |
-| Old, unpinned images | Not yet addressed | Public `weaveworksdemos/*` images from 2016–17; `mongo` untagged; K3s 1.27 is end of life |
+| Old, unpinned images | Not yet addressed | Public `weaveworksdemos/*` images from 2016–17; `redis:alpine` untagged (`mongo` pinned to 4.4.0 on Nov 26); K3s 1.27 is end of life |
 
 ### Cost
 
@@ -176,7 +177,8 @@ The hardest problem was how K3s used the Elastic IP: about four certificate fixe
 
 | Date (2026) | Problem | Cause | Fix |
 | --- | --- | --- | --- |
-| Nov 25 | Login and cart broke; Redis returned MISCONF | session-db had a read-only root filesystem and no `/data` volume, so snapshots failed and Redis refused all writes | Mounted an emptyDir at `/data` |
+| Nov 26 | Add to cart returned HTTP 500 | Untagged `mongo` pulled MongoDB 8.x, which removed the legacy wire opcodes the old carts driver uses | Pinned carts-db and orders-db to `mongo:4.4.0` |
+| Nov 25 | Login broke; Redis returned MISCONF | session-db had a read-only root filesystem and no `/data` volume, so snapshots failed and Redis refused all writes | Mounted an emptyDir at `/data` |
 | Nov 25 | Staging never auto-stopped | Idle threshold 5% CPU, but the node never drops below ~12% | Threshold raised to 15% |
 | Nov 25 | Deploy failed while the server was shutting down | CD tried to start an instance that was still `stopping` | CD now waits for a stopping instance first |
 | Nov 20 | CoreDNS never ready; user and catalogue restarted thousands of times; metrics pods crash-looped | K3s was started with an old Elastic IP as its external IP, so pods called an API address that no longer existed | K3s uses the private IP; the deploy script fixes old configs and fails if the API endpoint is wrong |
@@ -205,7 +207,7 @@ The top priority is now production; GitHub OIDC and backups from the Nov 23 list
 | High | Security | Change the Grafana password; move DB credentials to Secrets | admin/admin and plain-text credentials |
 | Medium | CI/CD | `terraform plan` on pull requests; apply only after approval | See changes before they hit AWS |
 | Medium | Reliability | PersistentVolumes (K3s local-path) for the databases | A pod restart loses all orders and users |
-| Medium | Supply chain | Pin every image tag; mirror to ECR with scan-on-push | Images are from 2016–17; `mongo` is untagged |
+| Medium | Supply chain | Pin every image tag; mirror to ECR with scan-on-push | Images are from 2016–17; `redis:alpine` is untagged; an untagged `mongo` already broke the cart once |
 | Medium | Platform | Upgrade K3s from 1.27 to a supported version | 1.27 is end of life |
 | Low | Cost | AWS Budget + Cost Anomaly Detection (free) | Catch surprises early |
 | Low | Sizing | Run the load test in `manifests-loadtest/` | Size production on data, not guesses |
