@@ -6,8 +6,11 @@ Staging runs on one EC2 instance (t3.medium) running K3s behind an Application L
 
 Day to day you only need the [Makefile](Makefile) at the repo root.
 
+To see what is done, what is still open and the plan for production, read the **[Project Progress Update](PROJECT_PROGRESS.md)**.
+
 | Doc | What's in it |
 |---|---|
+| [PROJECT_PROGRESS.md](PROJECT_PROGRESS.md) | Project progress update: status, architecture, costs, risks, roadmap |
 | [staging/README.md](staging/README.md) | Full staging setup: Terraform, deploy, access, backup and restore |
 | [staging/github-oidc/README.md](staging/github-oidc/README.md) | One-time GitHub OIDC deploy role (no AWS keys in GitHub) |
 | [DEPLOYMENT_SUMMARY.md](DEPLOYMENT_SUMMARY.md) | Short summary of the current setup |
